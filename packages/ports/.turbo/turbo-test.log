@@ -5,10 +5,10 @@
 
 [1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/_myTemp/local-web-hosting-mananger/packages/ports[39m
 
- [32m✓[39m src/index.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m src/index.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 42[2mms[22m[39m
 
 [2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
 [2m      Tests [22m [1m[32m3 passed[39m[22m[90m (3)[39m
-[2m   Start at [22m 16:05:36
-[2m   Duration [22m 1.59s[2m (transform 88ms, setup 0ms, collect 124ms, tests 27ms, environment 0ms, prepare 1.06s)[22m
+[2m   Start at [22m 16:33:29
+[2m   Duration [22m 3.53s[2m (transform 106ms, setup 0ms, collect 139ms, tests 42ms, environment 0ms, prepare 1.89s)[22m
 

@@ -17,6 +17,7 @@ import { detectProject } from "@lan/detector";
 import { findFreePort, isPortFree } from "@lan/ports";
 import { serveStatic, startNode, stopHosting } from "@lan/hosting";
 import { logFileFor, stopManaged } from "@lan/process-manager";
+import { activateDirectory, createBackup, listBackupRows, pruneBackups, restoreBackup } from "./backups.js";
 import { envSchema } from "@lan/config";
 
 const env = envSchema.parse(process.env);
@@ -49,6 +50,41 @@ const pendingImports = new Map<string, {
   outDir: string; rootDir: string; entries: number;
   detection: ReturnType<typeof detectProject>;
 }>();
+
+const pendingUpdates = new Map<string, {
+  id: string; projectId: string; archivePath: string; archiveName: string; archiveSize: number;
+  outDir: string; rootDir: string; entries: number;
+  detection: ReturnType<typeof detectProject>;
+}>();
+
+function startProjectRecord(p: {
+  id: string; type: string; path: string; serveDir: string | null;
+  spaFallback: number; port: number; startCommand: string | null;
+}): number | null {
+  if (p.type === "static") {
+    const dir = p.serveDir ? path.join(p.path, p.serveDir) : p.path;
+    if (!fs.existsSync(dir)) throw new Error(`Serve directory missing: ${dir}`);
+    serveStatic(p.id, dir, p.port, !!p.spaFallback, env.BIND_HOST);
+    return null;
+  }
+  if (!p.startCommand) throw new Error("No start command configured");
+  return startNode(p.id, p.path, p.startCommand, p.port, env.BIND_HOST, (tag, data) => {
+    const file = logFileFor(store.logsDir, p.id);
+    fs.appendFileSync(file, data.split("\n").filter(Boolean).map((l) => `[${new Date().toISOString()}] [${tag}] ${l}\n`).join(""));
+  });
+}
+
+async function verifyRunning(id: string, pid: number | null): Promise<boolean> {
+  await new Promise((r) => setTimeout(r, 1500));
+  try {
+    const res = await fetch(`http://127.0.0.1:${(await getProject(store, id))?.port ?? 0}/`, { signal: AbortSignal.timeout(3000) });
+    await res.arrayBuffer().catch(() => undefined);
+    return true;
+  } catch {
+    if (pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
+    return true;
+  }
+}
 
 app.get("/api/health", async () => ({ ok: true }));
 
@@ -271,6 +307,130 @@ app.patch("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string
     updatedAt: now(),
   }).where(eq(dbSchema.projects.id, p.id)).run();
   return { ok: true };
+});
+
+app.post("/api/projects/:id/updates/upload", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+  const p = await getProject(store, req.params.id);
+  if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
+  const file = await req.file();
+  if (!file) { reply.code(400); return { error: "bad-request", message: "No file uploaded" }; }
+  try { validateArchiveName(file.filename); }
+  catch (e) { reply.code(400); return { error: "bad-request", message: (e as Error).message }; }
+  const updateId = randomUUID();
+  const staging = path.join(store.stagingDir, updateId);
+  fs.mkdirSync(staging, { recursive: true });
+  const archivePath = path.join(staging, path.basename(file.filename));
+  await pipeline(file.file, fs.createWriteStream(archivePath));
+  const size = fs.statSync(archivePath).size;
+  let result;
+  try {
+    result = await extractRar(archivePath, staging, process.env.RAR_BINARY ?? "", {
+      maxEntries: 10000, maxDecompressedMb: 2048, timeoutSec: 120,
+    });
+  } catch (e) {
+    fs.rmSync(staging, { recursive: true, force: true });
+    reply.code(400);
+    return { error: "bad-request", message: (e as Error).message };
+  }
+  const detection = detectProject(result.rootDir);
+  pendingUpdates.set(updateId, {
+    id: updateId, projectId: p.id, archivePath, archiveName: file.filename, archiveSize: size,
+    outDir: result.outDir, rootDir: result.rootDir, entries: result.entries, detection,
+  });
+  return { updateId, entries: result.entries, detection };
+});
+
+app.post("/api/updates/:id/confirm", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+  const pending = pendingUpdates.get(req.params.id);
+  if (!pending) { reply.code(404); return { error: "not-found", message: "Update not found or expired" }; }
+  const p = await getProject(store, pending.projectId);
+  if (!p) { pendingUpdates.delete(req.params.id); reply.code(404); return { error: "not-found", message: "Project not found" }; }
+  const body = z.object({
+    serveDir: z.string().optional(),
+    spaFallback: z.boolean().default(!!p.spaFallback),
+    startCommand: z.string().max(500).nullable().optional(),
+  }).parse(req.body);
+  if (pending.detection.type === "unknown") {
+    reply.code(400);
+    return { error: "bad-request", message: "Unsupported project type in update archive." };
+  }
+
+  stopHosting(p.id);
+  stopManaged(p.id);
+  const backup = createBackup(store, p.id, p.version, p.path);
+  const backupId = backup.id;
+  const backupDir = backup.path;
+
+  const newVersion = p.version + 1;
+  try {
+    activateDirectory(store, p.id, pending.rootDir);
+    fs.rmSync(path.dirname(pending.outDir), { recursive: true, force: true });
+    pendingUpdates.delete(req.params.id);
+    store.db.update(dbSchema.projects).set({
+      type: pending.detection.type,
+      serveDir: body.serveDir ?? pending.detection.serveDirCandidates[0] ?? p.serveDir,
+      spaFallback: body.spaFallback ? 1 : 0,
+      startCommand: body.startCommand !== undefined ? body.startCommand : p.startCommand,
+      version: newVersion,
+      archiveName: pending.archiveName, archiveSize: pending.archiveSize,
+      pid: null, lastExitCode: null, status: "stopped", updatedAt: now(),
+    }).where(eq(dbSchema.projects.id, p.id)).run();
+
+    const updated = (await getProject(store, p.id))!;
+    if (!(await isPortFree(updated.port))) throw new Error(`Port ${updated.port} is occupied. Restore the backup or free the port.`);
+    const pid = startProjectRecord(updated);
+    const healthy = await verifyRunning(updated.id, pid);
+    if (!healthy) throw new Error("New version failed to start. Restoring previous version.");
+    store.db.update(dbSchema.projects).set({ status: "running", pid, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+    appendSysLog(p.id, `updated to v${newVersion} (backup ${backupId})`);
+    return { ok: true, version: newVersion, backupId };
+  } catch (e) {
+    try {
+      stopHosting(p.id);
+      stopManaged(p.id);
+      activateDirectory(store, p.id, backupDir);
+      const restored = (await getProject(store, p.id))!;
+      const pid = await isPortFree(restored.port) ? startProjectRecord(restored) : null;
+      store.db.update(dbSchema.projects).set({
+        status: pid || restored.type === "static" ? "running" : "crashed",
+        pid, updatedAt: now(),
+      }).where(eq(dbSchema.projects.id, p.id)).run();
+      appendSysLog(p.id, `update failed, restored v${p.version}: ${(e as Error).message}`);
+    } catch { /* backup dir retained for manual recovery */ }
+    reply.code(500);
+    return { error: "update-failed", message: (e as Error).message, restored: true, backupId };
+  }
+});
+
+app.get("/api/projects/:id/backups", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+  const p = await getProject(store, req.params.id);
+  if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
+  return listBackupRows(store, p.id);
+});
+
+app.post("/api/projects/:id/backups", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+  const p = await getProject(store, req.params.id);
+  if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
+  const backup = createBackup(store, p.id, p.version, p.path);
+  return { backupId: backup.id, version: p.version };
+});
+
+app.post("/api/projects/:id/rollback/:backupId", async (
+  req: FastifyRequest<{ Params: { id: string; backupId: string } }>, reply,
+) => {
+  const p = await getProject(store, req.params.id);
+  if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
+  stopHosting(p.id);
+  stopManaged(p.id);
+  let version: number;
+  try {
+    version = restoreBackup(store, p.id, req.params.backupId).version;
+  } catch {
+    reply.code(404);
+    return { error: "not-found", message: "Backup not found" };
+  }
+  appendSysLog(p.id, `rolled back to backup ${req.params.backupId} (v${version})`);
+  return { ok: true, version };
 });
 
 app.delete("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {

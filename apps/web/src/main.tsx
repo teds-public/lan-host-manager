@@ -98,9 +98,56 @@ function ImportBox({ onDone }: { onDone: () => void }) {
 function ProjectRow({ p, refresh }: { p: Project; refresh: () => void }) {
   const [logs, setLogs] = useState("");
   const [showLogs, setShowLogs] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [backups, setBackups] = useState<{ id: string; version: number; createdAt: string }[]>([]);
+  const [showBackups, setShowBackups] = useState(false);
+  const [busy, setBusy] = useState(false);
   async function action(a: string) {
-    await api(`/api/projects/${p.id}/${a}`, { method: "POST" });
-    refresh();
+    setMsg("");
+    try {
+      await api(`/api/projects/${p.id}/${a}`, { method: "POST" });
+      refresh();
+    } catch (e) { setMsg((e as Error).message); }
+  }
+  async function update(f: File) {
+    if (!window.confirm(`Update ${p.name} from ${f.name}? A backup is taken first.`)) return;
+    setBusy(true); setMsg("");
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      const up = await fetch(`/api/projects/${p.id}/updates/upload`, { method: "POST", body: fd });
+      const ud = await up.json();
+      if (!up.ok) throw new Error(ud.message);
+      const res = await fetch(`/api/updates/${ud.updateId}/confirm`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+      const rd = await res.json();
+      if (!res.ok) throw new Error(rd.restored ? `${rd.message} (previous version restored)` : rd.message);
+      setMsg(`Updated to v${rd.version}.`);
+      refresh();
+    } catch (e) { setMsg((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  async function loadBackups() {
+    const d = await api<{ id: string; version: number; createdAt: string }[]>(`/api/projects/${p.id}/backups`);
+    setBackups(d); setShowBackups((s) => !s);
+  }
+  async function rollback(bid: string) {
+    if (!window.confirm("Roll back to this backup? The current version is replaced.")) return;
+    setBusy(true);
+    try {
+      await api(`/api/projects/${p.id}/rollback/${bid}`, { method: "POST" });
+      refresh();
+    } catch (e) { setMsg((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  async function snapshot() {
+    setBusy(true);
+    try {
+      await api(`/api/projects/${p.id}/backups`, { method: "POST" });
+      setMsg("Backup created.");
+    } catch (e) { setMsg((e as Error).message); }
+    finally { setBusy(false); }
   }
   async function viewLogs() {
     const d = await api<{ logs: string }>(`/api/projects/${p.id}/logs`);
@@ -127,10 +174,29 @@ function ProjectRow({ p, refresh }: { p: Project; refresh: () => void }) {
           <button onClick={() => action("start")} className="rounded bg-green-600 px-2 py-1 text-xs text-white">Start</button>
           <button onClick={() => action("stop")} className="rounded bg-gray-600 px-2 py-1 text-xs text-white">Stop</button>
           <button onClick={() => action("restart")} className="rounded bg-yellow-600 px-2 py-1 text-xs text-white">Restart</button>
+          <label className="cursor-pointer rounded bg-purple-600 px-2 py-1 text-xs text-white">
+            Update
+            <input type="file" accept=".rar" className="hidden" disabled={busy}
+              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void update(f); }} />
+          </label>
+          <button onClick={snapshot} disabled={busy} className="rounded bg-teal-600 px-2 py-1 text-xs text-white disabled:opacity-50">Backup</button>
+          <button onClick={loadBackups} className="rounded bg-orange-600 px-2 py-1 text-xs text-white">Backups</button>
           <button onClick={viewLogs} className="rounded bg-blue-600 px-2 py-1 text-xs text-white">Logs</button>
           <button onClick={remove} className="rounded bg-red-600 px-2 py-1 text-xs text-white">Remove</button>
         </div>
       </div>
+      {msg && <p className="mt-1 text-xs text-red-600">{msg}</p>}
+      {showBackups && (
+        <div className="mt-2 space-y-1">
+          {backups.length === 0 && <p className="text-xs text-gray-500">No backups.</p>}
+          {backups.map((b) => (
+            <div key={b.id} className="flex items-center gap-2 text-xs">
+              <span>v{b.version} · {new Date(b.createdAt).toLocaleString()}</span>
+              <button onClick={() => rollback(b.id)} disabled={busy} className="rounded bg-orange-600 px-2 py-0.5 text-white disabled:opacity-50">Roll back</button>
+            </div>
+          ))}
+        </div>
+      )}
       {showLogs && <pre className="mt-2 max-h-64 overflow-auto bg-black p-2 text-xs text-green-300">{logs || "(no logs)"}</pre>}
     </div>
   );

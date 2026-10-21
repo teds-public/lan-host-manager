@@ -1,0 +1,4 @@
+
+> @lan/database@0.1.0 build D:\_myTemp\local-web-hosting-mananger\packages\database
+> tsc -p tsconfig.json
+

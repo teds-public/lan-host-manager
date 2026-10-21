@@ -1,0 +1,4 @@
+
+> @lan/hosting@0.1.0 build D:\_myTemp\local-web-hosting-mananger\packages\hosting
+> tsc -p tsconfig.json
+

@@ -1,0 +1,4 @@
+
+> @lan/shared@0.1.0 build D:\_myTemp\local-web-hosting-mananger\packages\shared
+> tsc -p tsconfig.json
+

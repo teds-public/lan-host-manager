@@ -248,7 +248,6 @@ function ProjectCard({ p, refresh }: { p: Project; refresh: () => void }) {
   const [confirm, setConfirm] = useState<ConfirmState>(null);
   const [details, setDetails] = useState<ProjectDetails | null>(null);
   const [showConfig, setShowConfig] = useState(false);
-  const [showMore, setShowMore] = useState(false);
   const [cfgBusy, setCfgBusy] = useState(false);
   const [cfg, setCfg] = useState({ name: p.name, serveDir: "", spaFallback: false, startCommand: "", installCommand: "", port: p.port, autoStart: false });
   const logRef = useRef<HTMLPreElement>(null);
@@ -379,18 +378,9 @@ function ProjectCard({ p, refresh }: { p: Project; refresh: () => void }) {
         <button type="button" onClick={openFolder} aria-label={`Open project folder for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>Folder</button>
         <button type="button" onClick={viewLogs} disabled={logsBusy} aria-expanded={showLogs} aria-label={`${showLogs ? "Hide" : "View"} logs for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>{logsBusy ? "Loading…" : showLogs ? "Hide logs" : "Logs"}</button>
         <button type="button" onClick={loadDetails} disabled={cfgBusy} aria-expanded={showConfig} aria-label={`${showConfig ? "Hide" : "Show"} configuration for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>{cfgBusy ? "Loading…" : "Config"}</button>
-        <button type="button" onClick={() => setShowMore((s) => !s)} aria-expanded={showMore} aria-label={`More actions for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>
-          More
-          <svg aria-hidden="true" className={`h-3.5 w-3.5 transition-transform ${showMore ? "rotate-180" : ""}`} viewBox="0 0 16 16" fill="currentColor"><path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
-        </button>
+        {p.type === "node" && <button type="button" onClick={() => setConfirm({ title: `Install dependencies for ${p.name}?`, body: "Runs the package manager inside the project directory. Check the install command in Config first.", label: "Install", run: install })} disabled={busy} className={`${btn} bg-cyan-700 text-white hover:bg-cyan-800`}>Install</button>}
+        <button type="button" onClick={() => setConfirm({ title: `Remove ${p.name}?`, body: "Stop the project and unregister it. Managed files can optionally be deleted.", label: "Remove", danger: true, run: async () => { setMsg(null); await fetch(`/api/projects/${p.id}`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ removeFiles: window.confirm("Also delete managed files?") }) }); refresh(); } })} className={`${btn} bg-red-600 text-white hover:bg-red-700`}>Remove</button>
       </div>
-
-      {showMore && (
-        <div className="mt-2 flex flex-wrap gap-2 rounded-lg bg-red-50/60 p-2 ring-1 ring-red-100" role="group" aria-label={`Dangerous actions for ${p.name}`}>
-          {p.type === "node" && <button type="button" onClick={() => setConfirm({ title: `Install dependencies for ${p.name}?`, body: "Runs the package manager inside the project directory. Check the install command in Config first.", label: "Install", run: install })} disabled={busy} className={`${btn} bg-cyan-700 text-white hover:bg-cyan-800`}>Install</button>}
-          <button type="button" onClick={() => setConfirm({ title: `Remove ${p.name}?`, body: "Stop the project and unregister it. Managed files can optionally be deleted.", label: "Remove", danger: true, run: async () => { setMsg(null); await fetch(`/api/projects/${p.id}`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ removeFiles: window.confirm("Also delete managed files?") }) }); refresh(); } })} className={`${btn} bg-red-600 text-white hover:bg-red-700`}>Remove</button>
-        </div>
-      )}
 
       <div className="mt-1"><ToastBar toast={msg} /></div>
 

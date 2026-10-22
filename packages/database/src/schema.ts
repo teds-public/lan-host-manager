@@ -11,6 +11,7 @@ export const projects = sqliteTable("projects", {
   spaFallback: integer("spa_fallback").notNull().default(0),
   startCommand: text("start_command"),
   installCommand: text("install_command"),
+  scripts: text("scripts"),
   pid: integer("pid"),
   lastExitCode: integer("last_exit_code"),
   logFile: text("log_file"),

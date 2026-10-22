@@ -3,7 +3,13 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 
 interface Project {
-  id: string; name: string; type: string; status: string; port: number;
+  id: string; name: string; type: string; status: string; port: number; version: number;
+  serveDir: string | null; spaFallback: boolean; startCommand: string | null;
+  scripts?: Record<string, string>;
+}
+
+interface ProjectDetails extends Project {
+  autoStart: boolean;
 }
 
 async function api<T>(url: string, opts?: RequestInit): Promise<T> {
@@ -102,6 +108,47 @@ function ProjectRow({ p, refresh }: { p: Project; refresh: () => void }) {
   const [backups, setBackups] = useState<{ id: string; version: number; createdAt: string }[]>([]);
   const [showBackups, setShowBackups] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [details, setDetails] = useState<ProjectDetails | null>(null);
+  const [showConfig, setShowConfig] = useState(false);
+  const [cfg, setCfg] = useState({ name: p.name, serveDir: "", spaFallback: false, startCommand: "", port: p.port, autoStart: false });
+  async function loadDetails() {
+    const d = await api<ProjectDetails>(`/api/projects/${p.id}`);
+    setDetails(d);
+    setCfg({
+      name: d.name, serveDir: d.serveDir ?? "", spaFallback: d.spaFallback,
+      startCommand: d.startCommand ?? "", port: d.port, autoStart: d.autoStart,
+    });
+    setShowConfig((s) => !s);
+  }
+  async function saveConfig(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true); setMsg("");
+    try {
+      await api(`/api/projects/${p.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: cfg.name,
+          serveDir: p.type === "static" ? (cfg.serveDir || undefined) : undefined,
+          spaFallback: p.type === "static" ? cfg.spaFallback : undefined,
+          startCommand: p.type === "node" ? (cfg.startCommand || null) : undefined,
+          port: Number(cfg.port) !== p.port ? Number(cfg.port) : undefined,
+          autoStart: cfg.autoStart,
+        }),
+      });
+      setMsg("Configuration saved.");
+      refresh();
+    } catch (e) { setMsg((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  async function install() {
+    if (!window.confirm(`Run dependency install for ${p.name}? This executes the package manager inside the project directory.`)) return;
+    setBusy(true); setMsg("");
+    try {
+      await api(`/api/projects/${p.id}/install`, { method: "POST" });
+      setMsg("Install started — watch the logs.");
+    } catch (e) { setMsg((e as Error).message); }
+    finally { setBusy(false); }
+  }
   async function action(a: string) {
     setMsg("");
     try {
@@ -181,11 +228,47 @@ function ProjectRow({ p, refresh }: { p: Project; refresh: () => void }) {
           </label>
           <button onClick={snapshot} disabled={busy} className="rounded bg-teal-600 px-2 py-1 text-xs text-white disabled:opacity-50">Backup</button>
           <button onClick={loadBackups} className="rounded bg-orange-600 px-2 py-1 text-xs text-white">Backups</button>
+          <button onClick={loadDetails} className="rounded bg-slate-600 px-2 py-1 text-xs text-white">Config</button>
+          {p.type === "node" && <button onClick={install} disabled={busy} className="rounded bg-cyan-700 px-2 py-1 text-xs text-white disabled:opacity-50">Install</button>}
           <button onClick={viewLogs} className="rounded bg-blue-600 px-2 py-1 text-xs text-white">Logs</button>
           <button onClick={remove} className="rounded bg-red-600 px-2 py-1 text-xs text-white">Remove</button>
         </div>
       </div>
       {msg && <p className="mt-1 text-xs text-red-600">{msg}</p>}
+      {showConfig && details && (
+        <form onSubmit={saveConfig} className="mt-2 space-y-2 rounded bg-gray-50 p-2 text-sm">
+          <p className="text-xs text-gray-500">v{details.version} · {details.type}
+            {details.scripts && Object.keys(details.scripts).length > 0 &&
+              <> · scripts: {Object.keys(details.scripts).join(", ")}</>}
+          </p>
+          <label className="block">Name
+            <input className="ml-2 border px-2 py-1" value={cfg.name} onChange={(e) => setCfg({ ...cfg, name: e.target.value })} />
+          </label>
+          <label className="block">Port
+            <input type="number" className="ml-2 border px-2 py-1 w-24" value={cfg.port} onChange={(e) => setCfg({ ...cfg, port: Number(e.target.value) })} />
+            <span className="ml-2 text-xs text-gray-500">Stop the project first to change the port.</span>
+          </label>
+          {p.type === "static" && (
+            <>
+              <label className="block">Serve directory
+                <input className="ml-2 border px-2 py-1" value={cfg.serveDir} onChange={(e) => setCfg({ ...cfg, serveDir: e.target.value })} placeholder="(project root)" />
+              </label>
+              <label className="block">
+                <input type="checkbox" checked={cfg.spaFallback} onChange={(e) => setCfg({ ...cfg, spaFallback: e.target.checked })} /> SPA fallback
+              </label>
+            </>
+          )}
+          {p.type === "node" && (
+            <label className="block">Start command
+              <input className="ml-2 border px-2 py-1 w-64" value={cfg.startCommand} onChange={(e) => setCfg({ ...cfg, startCommand: e.target.value })} placeholder="npm start" />
+            </label>
+          )}
+          <label className="block">
+            <input type="checkbox" checked={cfg.autoStart} onChange={(e) => setCfg({ ...cfg, autoStart: e.target.checked })} /> Auto-start on server boot
+          </label>
+          <button disabled={busy} className="rounded bg-slate-700 px-3 py-1 text-xs text-white disabled:opacity-50">Save</button>
+        </form>
+      )}
       {showBackups && (
         <div className="mt-2 space-y-1">
           {backups.length === 0 && <p className="text-xs text-gray-500">No backups.</p>}
@@ -227,6 +310,82 @@ function Login() {
   );
 }
 
+function Settings() {
+  const [form, setForm] = useState({ rarBinary: "", maxUploadMb: "500", maxEntries: "10000", maxDecompressedMb: "2048", extractTimeoutSec: "120" });
+  const [msg, setMsg] = useState("");
+  const [pw, setPw] = useState({ current: "", next: "" });
+  const [pwMsg, setPwMsg] = useState("");
+  const [info, setInfo] = useState<{ lanIps: string[]; dashboardPort: number; bindHost: string; portRange: [number, number] } | null>(null);
+  useEffect(() => {
+    api<Record<string, string>>("/api/settings").then((s) => setForm({
+      rarBinary: s.rarBinary ?? "", maxUploadMb: s.maxUploadMb ?? "500",
+      maxEntries: s.maxEntries ?? "10000", maxDecompressedMb: s.maxDecompressedMb ?? "2048",
+      extractTimeoutSec: s.extractTimeoutSec ?? "120",
+    })).catch((e) => setMsg((e as Error).message));
+    api<{ lanIps: string[]; dashboardPort: number; bindHost: string; portRange: [number, number] }>("/api/system/info").then(setInfo).catch(() => undefined);
+  }, []);
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setMsg("");
+    try { await api("/api/settings", { method: "PUT", body: JSON.stringify(form) }); setMsg("Settings saved."); }
+    catch (e) { setMsg((e as Error).message); }
+  }
+  async function changePw(e: React.FormEvent) {
+    e.preventDefault();
+    setPwMsg("");
+    try {
+      await api("/api/auth/change-password", { method: "POST", body: JSON.stringify(pw) });
+      setPw({ current: "", next: "" }); setPwMsg("Password changed.");
+    } catch (e) { setPwMsg((e as Error).message); }
+  }
+  return (
+    <div className="mx-auto max-w-2xl space-y-6 p-4">
+      <nav className="text-sm"><a className="text-blue-600" href="#/">← Projects</a></nav>
+      <h1 className="text-xl font-bold">Settings</h1>
+      {msg && <p className="text-sm text-red-600">{msg}</p>}
+      <section className="rounded border p-4">
+        <h2 className="font-semibold">Network</h2>
+        <p className="mt-1 text-sm text-gray-600">
+          Dashboard port: {info?.dashboardPort} · Bind: {info?.bindHost} · Project range: {info?.portRange.join("–")} ·
+          LAN: {info?.lanIps.join(", ") || "—"}
+        </p>
+      </section>
+      <form onSubmit={save} className="space-y-2 rounded border p-4">
+        <h2 className="font-semibold">Archive extraction</h2>
+        <label className="block text-sm">RAR utility path
+          <input className="ml-2 w-72 border px-2 py-1" value={form.rarBinary} onChange={(e) => setForm({ ...form, rarBinary: e.target.value })} placeholder="C:\Program Files\WinRAR\WinRAR.exe" />
+        </label>
+        <label className="block text-sm">Max upload (MB)
+          <input className="ml-2 w-24 border px-2 py-1" value={form.maxUploadMb} onChange={(e) => setForm({ ...form, maxUploadMb: e.target.value })} />
+        </label>
+        <label className="block text-sm">Max entries
+          <input className="ml-2 w-24 border px-2 py-1" value={form.maxEntries} onChange={(e) => setForm({ ...form, maxEntries: e.target.value })} />
+        </label>
+        <label className="block text-sm">Max decompressed (MB)
+          <input className="ml-2 w-24 border px-2 py-1" value={form.maxDecompressedMb} onChange={(e) => setForm({ ...form, maxDecompressedMb: e.target.value })} />
+        </label>
+        <label className="block text-sm">Extract timeout (s)
+          <input className="ml-2 w-24 border px-2 py-1" value={form.extractTimeoutSec} onChange={(e) => setForm({ ...form, extractTimeoutSec: e.target.value })} />
+        </label>
+        <button className="rounded bg-blue-600 px-3 py-1 text-sm text-white">Save settings</button>
+      </form>
+      <form onSubmit={changePw} className="space-y-2 rounded border p-4">
+        <h2 className="font-semibold">Change password</h2>
+        <input className="block w-full max-w-xs border px-2 py-1" type="password" placeholder="Current password" value={pw.current} onChange={(e) => setPw({ ...pw, current: e.target.value })} />
+        <input className="block w-full max-w-xs border px-2 py-1" type="password" placeholder="New password (min 12 chars)" value={pw.next} onChange={(e) => setPw({ ...pw, next: e.target.value })} />
+        {pwMsg && <p className="text-sm text-red-600">{pwMsg}</p>}
+        <button className="rounded bg-slate-700 px-3 py-1 text-sm text-white">Change password</button>
+      </form>
+      <section className="rounded border p-4 text-sm">
+        <h2 className="font-semibold">Windows Firewall</h2>
+        <p className="mt-1 text-gray-600">Allow inbound TCP on the dashboard port and project range for <strong>private</strong> networks only:</p>
+        <pre className="mt-2 overflow-auto bg-black p-2 text-xs text-green-300">New-NetFirewallRule -DisplayName "LAN Host Manager" -Direction Inbound -Action Allow -Protocol TCP -LocalPort {info?.dashboardPort ?? 3000},{info?.portRange.join("-") ?? "4100-4999"} -Profile Private</pre>
+        <p className="mt-1 text-gray-600">Never open these ports on public networks. Do not configure router port forwarding — this app is LAN-only by design.</p>
+      </section>
+    </div>
+  );
+}
+
 function Dashboard() {
   const { projects, error, refresh } = useProjects();
   const [info, setInfo] = useState<{ lanIps: string[]; dashboardPort: number }>({ lanIps: [], dashboardPort: 3000 });
@@ -239,7 +398,10 @@ function Dashboard() {
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-4">
       <header>
-        <h1 className="text-xl font-bold">LAN Host Manager</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-bold">LAN Host Manager</h1>
+          <a className="text-sm text-blue-600" href="#/settings">Settings</a>
+        </div>
         <p className="text-sm text-gray-600">
           {projects.length} projects, {running} running · LAN: {info.lanIps.join(", ") || "—"}:{info.dashboardPort}
         </p>
@@ -262,6 +424,7 @@ function App() {
     return () => window.removeEventListener("hashchange", f);
   }, []);
   if (route === "#/login") return <Login />;
+  if (route === "#/settings") return <Settings />;
   return <Dashboard />;
 }
 

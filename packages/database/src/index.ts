@@ -18,7 +18,7 @@ const MIGRATIONS = [
     id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'unknown',
     status TEXT NOT NULL DEFAULT 'stopped', port INTEGER NOT NULL UNIQUE,
     path TEXT NOT NULL, serve_dir TEXT, spa_fallback INTEGER NOT NULL DEFAULT 0,
-    start_command TEXT, install_command TEXT, pid INTEGER, last_exit_code INTEGER,
+    start_command TEXT, install_command TEXT, scripts TEXT, pid INTEGER, last_exit_code INTEGER,
     log_file TEXT, version INTEGER NOT NULL DEFAULT 1, auto_start INTEGER NOT NULL DEFAULT 0,
     archive_name TEXT, archive_size INTEGER,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -38,4 +38,8 @@ const MIGRATIONS = [
 
 export function migrate(raw: Database.Database): void {
   for (const sql of MIGRATIONS) raw.exec(sql);
+  const cols = raw.prepare("PRAGMA table_info(projects)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "scripts")) {
+    raw.exec("ALTER TABLE projects ADD COLUMN scripts TEXT");
+  }
 }

@@ -16,7 +16,7 @@ import { extractRar, validateArchiveName } from "@lan/archive";
 import { detectProject } from "@lan/detector";
 import { findFreePort, isPortFree } from "@lan/ports";
 import { serveStatic, startNode, stopHosting, isHosting, nodeExitCode } from "@lan/hosting";
-import { logFileFor, readTail, writeLog } from "@lan/process-manager";
+import { logFileFor, readTail, startManaged, writeLog } from "@lan/process-manager";
 import { activateDirectory, createBackup, listBackupRows, pruneBackups, restoreBackup } from "./backups.js";
 import { envSchema } from "@lan/config";
 
@@ -125,6 +125,20 @@ app.post("/api/auth/logout", async (req, reply) => {
   return { ok: true };
 });
 
+const serveDirSchema = z.string().max(200).refine(
+  (s) => {
+    if (!s || path.isAbsolute(s) || s.includes("\0")) return false;
+    const norm = path.posix.normalize(s.replace(/\\/g, "/"));
+    return norm !== ".." && !norm.startsWith("../") && !norm.includes("/../");
+  },
+  { message: "serveDir must be a relative path inside the project" },
+);
+
+const startCommandSchema = z.string().max(500).refine(
+  (s) => s.trim().length > 0 && !/[;&|`$<>()\n\r]/.test(s),
+  { message: "startCommand must be a plain command without shell operators" },
+);
+
 app.get("/api/projects", async () => {
   const rows = await listProjects(store);
   return rows.map((r) => ({ ...r, spaFallback: !!r.spaFallback, autoStart: !!r.autoStart }));
@@ -133,10 +147,43 @@ app.get("/api/projects", async () => {
 app.get("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
   const p = await getProject(store, req.params.id);
   if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
-  return { ...p, spaFallback: !!p.spaFallback, autoStart: !!p.autoStart };
+  let scripts: Record<string, string> | undefined;
+  try { scripts = p.scripts ? (JSON.parse(p.scripts) as Record<string, string>) : undefined; }
+  catch { scripts = undefined; }
+  return { ...p, spaFallback: !!p.spaFallback, autoStart: !!p.autoStart, scripts };
 });
 
+function getLimits(): { maxUploadMb: number; maxEntries: number; maxDecompressedMb: number; extractTimeoutSec: number; rarBinary: string } {
+  const rows = store.db.select().from(dbSchema.settings).all();
+  const all = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  const num = (v: string | undefined, fallback: number): number => {
+    const n = v === undefined ? NaN : Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+  return {
+    maxUploadMb: num(all.maxUploadMb, 500),
+    maxEntries: num(all.maxEntries, 10000),
+    maxDecompressedMb: num(all.maxDecompressedMb, 2048),
+    extractTimeoutSec: num(all.extractTimeoutSec, 120),
+    rarBinary: all.rarBinary ?? process.env.RAR_BINARY ?? "",
+  };
+}
+
+async function saveUploadWithCap(src: NodeJS.ReadableStream, dest: string, cap: number, capMsg: string): Promise<void> {
+  const { Transform } = await import("node:stream");
+  let written = 0;
+  const guard = new Transform({
+    transform(chunk: Buffer, _enc: string, cb: (err?: Error | null, data?: Buffer) => void) {
+      written += chunk.length;
+      if (written > cap) { cb(new Error(capMsg)); return; }
+      cb(null, chunk);
+    },
+  });
+  await pipeline(src, guard, fs.createWriteStream(dest));
+}
+
 app.post("/api/imports/upload", async (req, reply) => {
+  const limits = getLimits();
   const file = await req.file();
   if (!file) { reply.code(400); return { error: "bad-request", message: "No file uploaded" }; }
   try { validateArchiveName(file.filename); }
@@ -145,10 +192,16 @@ app.post("/api/imports/upload", async (req, reply) => {
   const staging = path.join(store.stagingDir, importId);
   fs.mkdirSync(staging, { recursive: true });
   const archivePath = path.join(staging, path.basename(file.filename));
-  await pipeline(file.file, fs.createWriteStream(archivePath));
+  try {
+    await saveUploadWithCap(file.file, archivePath, limits.maxUploadMb * 1024 * 1024, `Archive exceeds the ${limits.maxUploadMb} MB upload limit.`);
+  } catch (e) {
+    fs.rmSync(staging, { recursive: true, force: true });
+    reply.code(400);
+    return { error: "bad-request", message: (e as Error).message };
+  }
   const size = fs.statSync(archivePath).size;
-  const result = await extractRar(archivePath, staging, process.env.RAR_BINARY ?? "", {
-    maxEntries: 10000, maxDecompressedMb: 2048, timeoutSec: 120,
+  const result = await extractRar(archivePath, staging, limits.rarBinary, {
+    maxEntries: limits.maxEntries, maxDecompressedMb: limits.maxDecompressedMb, timeoutSec: limits.extractTimeoutSec,
   });
   const detection = detectProject(result.rootDir);
   pendingImports.set(importId, {
@@ -163,10 +216,10 @@ app.post("/api/imports/:id/confirm", async (req: FastifyRequest<{ Params: { id: 
   if (!pending) { reply.code(404); return { error: "not-found", message: "Import not found or expired" }; }
   const body = z.object({
     name: z.string().min(1).max(100),
-    port: z.number().int().min(1).max(65535).optional(),
-    serveDir: z.string().optional(),
+    port: z.number().int().min(env.PORT_RANGE_START).max(env.PORT_RANGE_END).optional(),
+    serveDir: serveDirSchema.optional(),
     spaFallback: z.boolean().default(false),
-    startCommand: z.string().max(500).optional(),
+    startCommand: startCommandSchema.optional(),
   }).parse(req.body);
   const taken = new Set((await listProjects(store)).map((p) => p.port));
   const port = body.port ?? await findFreePort(env.PORT_RANGE_START, env.PORT_RANGE_END, taken);
@@ -185,7 +238,8 @@ app.post("/api/imports/:id/confirm", async (req: FastifyRequest<{ Params: { id: 
     id, name: body.name, type: pending.detection.type, status: "stopped", port,
     path: projectPath, serveDir: body.serveDir ?? pending.detection.serveDirCandidates[0] ?? null,
     spaFallback: body.spaFallback ? 1 : 0, startCommand: body.startCommand ?? null,
-    installCommand: null, pid: null, lastExitCode: null,
+    installCommand: null, scripts: pending.detection.scripts ? JSON.stringify(pending.detection.scripts) : null,
+    pid: null, lastExitCode: null,
     logFile: logFileFor(store.logsDir, id), version: 1, autoStart: 0,
     archiveName: pending.archiveName, archiveSize: pending.archiveSize,
     createdAt: now(), updatedAt: now(),
@@ -278,6 +332,35 @@ app.post("/api/projects/:id/restart", async (req: FastifyRequest<{ Params: { id:
   }
 });
 
+app.post("/api/projects/:id/install", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+  const p = await getProject(store, req.params.id);
+  if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
+  if (p.type !== "node") { reply.code(400); return { error: "bad-request", message: "Only Node.js projects need dependency installation." }; }
+  if (!fs.existsSync(path.join(p.path, "package.json"))) {
+    reply.code(400);
+    return { error: "bad-request", message: "No package.json found." };
+  }
+  if (p.installCommand && !/^(npm|pnpm|yarn)\b/.test(p.installCommand.trim())) {
+    reply.code(400);
+    return { error: "bad-request", message: "Stored install command is not an npm-compatible invocation. Refusing to run it." };
+  }
+  const manager = p.installCommand?.trim().split(/\s+/)[0] ?? "npm";
+  const args = p.installCommand ? p.installCommand.trim().split(/\s+/).slice(1) : ["install", "--no-audit", "--no-fund"];
+  if (args.some((a) => /[;&|`$<>()\n\r]/.test(a))) {
+    reply.code(400);
+    return { error: "bad-request", message: "Install arguments contain shell operators. Refusing to run." };
+  }
+  try {
+    const logFile = logFileFor(store.logsDir, p.id);
+    const proc = startManaged(p.id, manager, args, { cwd: p.path, logFile });
+    appendSysLog(p.id, `dependency install started (pid ${proc.pid ?? "?"})`);
+    return { ok: true, pid: proc.pid };
+  } catch (e) {
+    reply.code(500);
+    return { error: "install-failed", message: (e as Error).message };
+  }
+});
+
 app.get("/api/projects/:id/logs", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
   const p = await getProject(store, req.params.id);
   if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
@@ -291,13 +374,17 @@ app.patch("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string
   if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
   const body = z.object({
     name: z.string().min(1).max(100).optional(),
-    serveDir: z.string().optional(),
+    serveDir: serveDirSchema.optional(),
     spaFallback: z.boolean().optional(),
-    startCommand: z.string().max(500).nullable().optional(),
+    startCommand: startCommandSchema.nullable().optional(),
     port: z.number().int().min(1).max(65535).optional(),
     autoStart: z.boolean().optional(),
   }).parse(req.body);
   if (body.port !== undefined && body.port !== p.port) {
+    if (isHosting(p.id, p.pid)) {
+      reply.code(409);
+      return { error: "conflict", message: "Stop the project before changing its port." };
+    }
     if (!(await isPortFree(body.port))) {
       reply.code(409);
       return { error: "conflict", message: `Port ${body.port} is occupied.` };
@@ -318,6 +405,7 @@ app.patch("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string
 app.post("/api/projects/:id/updates/upload", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
   const p = await getProject(store, req.params.id);
   if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
+  const limits = getLimits();
   const file = await req.file();
   if (!file) { reply.code(400); return { error: "bad-request", message: "No file uploaded" }; }
   try { validateArchiveName(file.filename); }
@@ -326,12 +414,18 @@ app.post("/api/projects/:id/updates/upload", async (req: FastifyRequest<{ Params
   const staging = path.join(store.stagingDir, updateId);
   fs.mkdirSync(staging, { recursive: true });
   const archivePath = path.join(staging, path.basename(file.filename));
-  await pipeline(file.file, fs.createWriteStream(archivePath));
+  try {
+    await saveUploadWithCap(file.file, archivePath, limits.maxUploadMb * 1024 * 1024, `Archive exceeds the ${limits.maxUploadMb} MB upload limit.`);
+  } catch (e) {
+    fs.rmSync(staging, { recursive: true, force: true });
+    reply.code(400);
+    return { error: "bad-request", message: (e as Error).message };
+  }
   const size = fs.statSync(archivePath).size;
   let result;
   try {
-    result = await extractRar(archivePath, staging, process.env.RAR_BINARY ?? "", {
-      maxEntries: 10000, maxDecompressedMb: 2048, timeoutSec: 120,
+    result = await extractRar(archivePath, staging, limits.rarBinary, {
+      maxEntries: limits.maxEntries, maxDecompressedMb: limits.maxDecompressedMb, timeoutSec: limits.extractTimeoutSec,
     });
   } catch (e) {
     fs.rmSync(staging, { recursive: true, force: true });
@@ -352,9 +446,9 @@ app.post("/api/updates/:id/confirm", async (req: FastifyRequest<{ Params: { id: 
   const p = await getProject(store, pending.projectId);
   if (!p) { pendingUpdates.delete(req.params.id); reply.code(404); return { error: "not-found", message: "Project not found" }; }
   const body = z.object({
-    serveDir: z.string().optional(),
+    serveDir: serveDirSchema.optional(),
     spaFallback: z.boolean().default(!!p.spaFallback),
-    startCommand: z.string().max(500).nullable().optional(),
+    startCommand: startCommandSchema.nullable().optional(),
   }).parse(req.body);
   if (pending.detection.type === "unknown") {
     reply.code(400);
@@ -376,6 +470,7 @@ app.post("/api/updates/:id/confirm", async (req: FastifyRequest<{ Params: { id: 
       serveDir: body.serveDir ?? pending.detection.serveDirCandidates[0] ?? p.serveDir,
       spaFallback: body.spaFallback ? 1 : 0,
       startCommand: body.startCommand !== undefined ? body.startCommand : p.startCommand,
+      scripts: pending.detection.scripts ? JSON.stringify(pending.detection.scripts) : p.scripts,
       version: newVersion,
       archiveName: pending.archiveName, archiveSize: pending.archiveSize,
       pid: null, lastExitCode: null, status: "stopped", updatedAt: now(),
@@ -469,17 +564,47 @@ app.get("/api/system/info", async () => ({
   portRange: [env.PORT_RANGE_START, env.PORT_RANGE_END],
 }));
 
+const SETTING_KEYS = ["rarBinary", "maxUploadMb", "maxEntries", "maxDecompressedMb", "extractTimeoutSec"] as const;
+
 app.get("/api/settings", async () => {
   const rows = store.db.select().from(dbSchema.settings).all();
-  return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  const all = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  const out: Record<string, string> = {};
+  for (const k of SETTING_KEYS) if (all[k] !== undefined) out[k] = all[k];
+  return out;
 });
 
-app.put("/api/settings", async (req) => {
-  const body = z.record(z.string()).parse(req.body);
+app.put("/api/settings", async (req, reply) => {
+  const body = z.object({
+    rarBinary: z.string().max(500).optional(),
+    maxUploadMb: z.coerce.number().int().min(1).max(4096).optional(),
+    maxEntries: z.coerce.number().int().min(1).max(100000).optional(),
+    maxDecompressedMb: z.coerce.number().int().min(1).max(16384).optional(),
+    extractTimeoutSec: z.coerce.number().int().min(10).max(1800).optional(),
+  }).parse(req.body);
   for (const [k, v] of Object.entries(body)) {
-    store.db.insert(dbSchema.settings).values({ key: k, value: v, updatedAt: now() })
-      .onConflictDoUpdate({ target: dbSchema.settings.key, set: { value: v, updatedAt: now() } }).run();
+    if (v === undefined) continue;
+    const str = String(v);
+    if (/[\0\n\r]/.test(str)) { reply.code(400); return { error: "bad-request", message: `Invalid value for ${k}` }; }
+    store.db.insert(dbSchema.settings).values({ key: k, value: str, updatedAt: now() })
+      .onConflictDoUpdate({ target: dbSchema.settings.key, set: { value: str, updatedAt: now() } }).run();
   }
+  return { ok: true };
+});
+
+app.post("/api/auth/change-password", async (req, reply) => {
+  const body = z.object({ current: z.string().min(1), next: z.string().min(12).max(200) }).parse(req.body);
+  const rows = store.db.select().from(dbSchema.users).all();
+  const user = rows[0];
+  if (!user || !req.user || user.username !== req.user.username) {
+    reply.code(401);
+    return { error: "unauthorized", message: "Login required" };
+  }
+  if (!(await verifyPassword(body.current, user.passwordHash))) {
+    reply.code(401);
+    return { error: "unauthorized", message: "Current password is wrong." };
+  }
+  store.db.update(dbSchema.users).set({ passwordHash: await hashPassword(body.next) }).where(eq(dbSchema.users.id, user.id)).run();
   return { ok: true };
 });
 

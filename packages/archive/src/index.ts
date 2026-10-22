@@ -29,13 +29,36 @@ function isSafeEntry(name: string): boolean {
   return true;
 }
 
-function findRoot(outDir: string): string {
+const JUNK_RE = /(^|\/)(__MACOSX|\.DS_Store|Thumbs\.db|desktop\.ini|\.Spotlight-V100|\.Trashes|\.fseventsd)($|\/)/i;
+
+function isJunkEntry(rel: string): boolean {
+  return JUNK_RE.test(rel.replace(/\\/g, "/"));
+}
+
+function unwrapSingleDir(outDir: string): string | null {
   const entries = fs.readdirSync(outDir);
-  if (entries.length === 1) {
-    const only = path.join(outDir, entries[0]!);
+  const real = entries.filter((e) => !isJunkEntry(e));
+  if (real.length !== 1) return null;
+  const only = path.join(outDir, real[0]!);
+  try {
     if (fs.statSync(only).isDirectory()) return only;
-  }
-  return outDir;
+  } catch { return null; }
+  return null;
+}
+
+export function stripJunkEntries(outDir: string): void {
+  const walk = (dir: string): void => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      const rel = path.relative(outDir, full).replace(/\\/g, "/");
+      if (isJunkEntry(e.name) || isJunkEntry(rel)) {
+        fs.rmSync(full, { recursive: true, force: true });
+      } else if (e.isDirectory()) {
+        walk(full);
+      }
+    }
+  };
+  walk(outDir);
 }
 
 export function detectArchiveKind(name: string): ArchiveKind {
@@ -142,10 +165,11 @@ export async function extractRar(
   };
   walk(outDir);
 
+  stripJunkEntries(outDir);
   let total = 0;
   for (const rel of entries) total += fs.statSync(path.join(outDir, rel)).size;
   checkLimits(entries.length, total, limits);
-  return { outDir, rootDir: findRoot(outDir), entries: entries.length };
+  return { outDir, rootDir: unwrapSingleDir(outDir) ?? outDir, entries: entries.length };
 }
 
 interface ZipEntry {
@@ -217,6 +241,7 @@ export function extractZip(
     for (const entry of entries) {
       const rel = entry.name.replace(/\\/g, "/");
       if (!isSafeEntry(rel)) continue;
+      if (isJunkEntry(rel)) continue;
       if (entry.flags & 0x1) throw new Error(`Encrypted entry not supported: ${rel}`);
       if (isZipSymlink(entry)) continue;
       const full = containedPath(outDir, rel);
@@ -243,7 +268,8 @@ export function extractZip(
     fs.rmSync(outDir, { recursive: true, force: true });
     throw err;
   }
-  return { outDir, rootDir: findRoot(outDir), entries: written.length };
+  stripJunkEntries(outDir);
+  return { outDir, rootDir: unwrapSingleDir(outDir) ?? outDir, entries: written.length };
 }
 
 export async function extractArchive(

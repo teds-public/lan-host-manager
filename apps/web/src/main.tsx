@@ -5,6 +5,7 @@ import "./index.css";
 interface Project {
   id: string; name: string; type: string; status: string; port: number; version: number;
   serveDir: string | null; spaFallback: boolean; startCommand: string | null;
+  installCommand: string | null; lanUrl: string;
   scripts?: Record<string, string>;
 }
 
@@ -110,13 +111,14 @@ function ProjectRow({ p, refresh }: { p: Project; refresh: () => void }) {
   const [busy, setBusy] = useState(false);
   const [details, setDetails] = useState<ProjectDetails | null>(null);
   const [showConfig, setShowConfig] = useState(false);
-  const [cfg, setCfg] = useState({ name: p.name, serveDir: "", spaFallback: false, startCommand: "", port: p.port, autoStart: false });
+  const [cfg, setCfg] = useState({ name: p.name, serveDir: "", spaFallback: false, startCommand: "", installCommand: "", port: p.port, autoStart: false });
   async function loadDetails() {
     const d = await api<ProjectDetails>(`/api/projects/${p.id}`);
     setDetails(d);
     setCfg({
       name: d.name, serveDir: d.serveDir ?? "", spaFallback: d.spaFallback,
-      startCommand: d.startCommand ?? "", port: d.port, autoStart: d.autoStart,
+      startCommand: d.startCommand ?? "", installCommand: d.installCommand ?? "",
+      port: d.port, autoStart: d.autoStart,
     });
     setShowConfig((s) => !s);
   }
@@ -131,6 +133,7 @@ function ProjectRow({ p, refresh }: { p: Project; refresh: () => void }) {
           serveDir: p.type === "static" ? (cfg.serveDir || undefined) : undefined,
           spaFallback: p.type === "static" ? cfg.spaFallback : undefined,
           startCommand: p.type === "node" ? (cfg.startCommand || null) : undefined,
+          installCommand: p.type === "node" ? (cfg.installCommand || null) : undefined,
           port: Number(cfg.port) !== p.port ? Number(cfg.port) : undefined,
           autoStart: cfg.autoStart,
         }),
@@ -217,10 +220,12 @@ function ProjectRow({ p, refresh }: { p: Project; refresh: () => void }) {
         <span className="text-xs rounded bg-gray-100 px-2 py-0.5">{p.type}</span>
         <span className="text-xs rounded bg-gray-100 px-2 py-0.5">{p.status}</span>
         <span className="text-xs">:{p.port}</span>
+        {p.status === "running" && <a href={p.lanUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 underline">{p.lanUrl}</a>}
         <div className="ml-auto flex gap-1">
           <button onClick={() => action("start")} className="rounded bg-green-600 px-2 py-1 text-xs text-white">Start</button>
           <button onClick={() => action("stop")} className="rounded bg-gray-600 px-2 py-1 text-xs text-white">Stop</button>
           <button onClick={() => action("restart")} className="rounded bg-yellow-600 px-2 py-1 text-xs text-white">Restart</button>
+          {p.status === "running" && <a href={p.lanUrl} target="_blank" rel="noreferrer" className="rounded bg-emerald-600 px-2 py-1 text-xs text-white">Open</a>}
           <label className="cursor-pointer rounded bg-purple-600 px-2 py-1 text-xs text-white">
             Update
             <input type="file" accept=".rar" className="hidden" disabled={busy}
@@ -259,9 +264,15 @@ function ProjectRow({ p, refresh }: { p: Project; refresh: () => void }) {
             </>
           )}
           {p.type === "node" && (
-            <label className="block">Start command
-              <input className="ml-2 border px-2 py-1 w-64" value={cfg.startCommand} onChange={(e) => setCfg({ ...cfg, startCommand: e.target.value })} placeholder="npm start" />
-            </label>
+            <>
+              <label className="block">Start command
+                <input className="ml-2 border px-2 py-1 w-64" value={cfg.startCommand} onChange={(e) => setCfg({ ...cfg, startCommand: e.target.value })} placeholder="npm start" />
+              </label>
+              <label className="block">Install command
+                <input className="ml-2 border px-2 py-1 w-64" value={cfg.installCommand} onChange={(e) => setCfg({ ...cfg, installCommand: e.target.value })} placeholder="npm install --no-audit --no-fund" />
+                <span className="ml-2 text-xs text-gray-500">Runs only when you press Install.</span>
+              </label>
+            </>
           )}
           <label className="block">
             <input type="checkbox" checked={cfg.autoStart} onChange={(e) => setCfg({ ...cfg, autoStart: e.target.checked })} /> Auto-start on server boot
@@ -311,18 +322,18 @@ function Login() {
 }
 
 function Settings() {
-  const [form, setForm] = useState({ rarBinary: "", maxUploadMb: "500", maxEntries: "10000", maxDecompressedMb: "2048", extractTimeoutSec: "120" });
+  const [form, setForm] = useState({ rarBinary: "", maxUploadMb: "500", maxEntries: "10000", maxDecompressedMb: "2048", extractTimeoutSec: "120", lanAccess: "true" });
   const [msg, setMsg] = useState("");
   const [pw, setPw] = useState({ current: "", next: "" });
   const [pwMsg, setPwMsg] = useState("");
-  const [info, setInfo] = useState<{ lanIps: string[]; dashboardPort: number; bindHost: string; portRange: [number, number] } | null>(null);
+  const [info, setInfo] = useState<{ lanIps: string[]; dashboardPort: number; bindHost: string; portRange: [number, number]; lanAccess: boolean; projectHost: string } | null>(null);
   useEffect(() => {
     api<Record<string, string>>("/api/settings").then((s) => setForm({
       rarBinary: s.rarBinary ?? "", maxUploadMb: s.maxUploadMb ?? "500",
       maxEntries: s.maxEntries ?? "10000", maxDecompressedMb: s.maxDecompressedMb ?? "2048",
-      extractTimeoutSec: s.extractTimeoutSec ?? "120",
+      extractTimeoutSec: s.extractTimeoutSec ?? "120", lanAccess: s.lanAccess ?? "true",
     })).catch((e) => setMsg((e as Error).message));
-    api<{ lanIps: string[]; dashboardPort: number; bindHost: string; portRange: [number, number] }>("/api/system/info").then(setInfo).catch(() => undefined);
+    api<{ lanIps: string[]; dashboardPort: number; bindHost: string; portRange: [number, number]; lanAccess: boolean; projectHost: string }>("/api/system/info").then(setInfo).catch(() => undefined);
   }, []);
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -349,6 +360,14 @@ function Settings() {
           Dashboard port: {info?.dashboardPort} · Bind: {info?.bindHost} · Project range: {info?.portRange.join("–")} ·
           LAN: {info?.lanIps.join(", ") || "—"}
         </p>
+        <p className="mt-1 text-sm text-gray-600">Projects served on: <strong>{info?.projectHost ?? "—"}</strong>
+          {info && !info.lanAccess && " (loopback only — other devices cannot reach projects)"}
+        </p>
+        <label className="mt-2 block text-sm">
+          <input type="checkbox" checked={form.lanAccess === "true"}
+            onChange={(e) => setForm({ ...form, lanAccess: e.target.checked ? "true" : "false" })} /> LAN access for hosted projects
+        </label>
+        <p className="mt-1 text-xs text-gray-500">Takes effect when a project is (re)started. Save in the archive section below. The dashboard itself always follows its startup bind setting.</p>
       </section>
       <form onSubmit={save} className="space-y-2 rounded border p-4">
         <h2 className="font-semibold">Archive extraction</h2>
@@ -390,11 +409,14 @@ function Dashboard() {
   const { projects, error, refresh } = useProjects();
   const [info, setInfo] = useState<{ lanIps: string[]; dashboardPort: number }>({ lanIps: [], dashboardPort: 3000 });
   const [q, setQ] = useState("");
+  const [status, setStatus] = useState("all");
   useEffect(() => {
     api<{ lanIps: string[]; dashboardPort: number }>("/api/system/info").then(setInfo).catch(() => undefined);
   }, []);
-  const filtered = projects.filter((p) => p.name.toLowerCase().includes(q.toLowerCase()));
+  const filtered = projects.filter((p) =>
+    p.name.toLowerCase().includes(q.toLowerCase()) && (status === "all" || p.status === status));
   const running = projects.filter((p) => p.status === "running").length;
+  const crashed = projects.filter((p) => p.status === "crashed").length;
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-4">
       <header>
@@ -403,12 +425,21 @@ function Dashboard() {
           <a className="text-sm text-blue-600" href="#/settings">Settings</a>
         </div>
         <p className="text-sm text-gray-600">
-          {projects.length} projects, {running} running · LAN: {info.lanIps.join(", ") || "—"}:{info.dashboardPort}
+          {projects.length} projects, {running} running{crashed > 0 ? `, ${crashed} crashed` : ""} · LAN: {info.lanIps.join(", ") || "—"}:{info.dashboardPort}
         </p>
       </header>
       {error && <p className="text-sm text-red-600">{error}</p>}
       <ImportBox onDone={refresh} />
-      <input className="w-full border px-2 py-1" placeholder="Search projects…" value={q} onChange={(e) => setQ(e.target.value)} />
+      <div className="flex gap-2">
+        <input className="flex-1 border px-2 py-1" placeholder="Search projects…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <select className="border px-2 py-1" value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="all">All</option>
+          <option value="running">Running</option>
+          <option value="stopped">Stopped</option>
+          <option value="crashed">Crashed</option>
+          <option value="unknown">Unknown</option>
+        </select>
+      </div>
       {filtered.length === 0
         ? <p className="text-sm text-gray-500">No projects yet. Import a .rar archive above.</p>
         : <div className="space-y-2">{filtered.map((p) => <ProjectRow key={p.id} p={p} refresh={refresh} />)}</div>}

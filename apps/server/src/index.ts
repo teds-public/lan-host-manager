@@ -62,13 +62,14 @@ function startProjectRecord(p: {
   spaFallback: number; port: number; startCommand: string | null;
 }): Promise<number | null> {
   const logFile = logFileFor(store.logsDir, p.id);
+  const host = projectHost();
   if (p.type === "static") {
     const dir = p.serveDir ? path.join(p.path, p.serveDir) : p.path;
     if (!fs.existsSync(dir)) throw new Error(`Serve directory missing: ${dir}`);
-    return serveStatic(p.id, dir, p.port, !!p.spaFallback, env.BIND_HOST, logFile).then(() => null);
+    return serveStatic(p.id, dir, p.port, !!p.spaFallback, host, logFile).then(() => null);
   }
   if (!p.startCommand) throw new Error("No start command configured");
-  return Promise.resolve(startNode(p.id, p.path, p.startCommand, p.port, env.BIND_HOST, logFile, (code) => {
+  return Promise.resolve(startNode(p.id, p.path, p.startCommand, p.port, host, logFile, (code) => {
     store.db.update(dbSchema.projects).set({ status: "crashed", lastExitCode: code, pid: null, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
     writeLog(logFileFor(store.logsDir, p.id), "sys", `marked crashed (exit ${code})`);
   }));
@@ -139,9 +140,27 @@ const startCommandSchema = z.string().max(500).refine(
   { message: "startCommand must be a plain command without shell operators" },
 );
 
+const installCommandSchema = z.string().max(500).refine(
+  (s) => /^(npm|pnpm|yarn)\b/.test(s.trim()) && !/[;&|`$<>()\n\r]/.test(s),
+  { message: "installCommand must be an npm/pnpm/yarn invocation without shell operators" },
+);
+
+function projectHost(): string {
+  try {
+    const rows = store.db.select().from(dbSchema.settings).all();
+    const v = rows.find((r) => r.key === "lanAccess")?.value;
+    if (v === "false") return "127.0.0.1";
+  } catch { /* default below */ }
+  return env.BIND_HOST;
+}
+
 app.get("/api/projects", async () => {
   const rows = await listProjects(store);
-  return rows.map((r) => ({ ...r, spaFallback: !!r.spaFallback, autoStart: !!r.autoStart }));
+  const host = projectHost();
+  return rows.map((r) => ({
+    ...r, spaFallback: !!r.spaFallback, autoStart: !!r.autoStart,
+    lanUrl: `http://${host === "0.0.0.0" ? getLanIPv4()[0] ?? "localhost" : host}:${r.port}`,
+  }));
 });
 
 app.get("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
@@ -150,7 +169,9 @@ app.get("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string }
   let scripts: Record<string, string> | undefined;
   try { scripts = p.scripts ? (JSON.parse(p.scripts) as Record<string, string>) : undefined; }
   catch { scripts = undefined; }
-  return { ...p, spaFallback: !!p.spaFallback, autoStart: !!p.autoStart, scripts };
+  const host = projectHost();
+  const lanUrl = `http://${host === "0.0.0.0" ? getLanIPv4()[0] ?? "localhost" : host}:${p.port}`;
+  return { ...p, spaFallback: !!p.spaFallback, autoStart: !!p.autoStart, scripts, lanUrl };
 });
 
 function getLimits(): { maxUploadMb: number; maxEntries: number; maxDecompressedMb: number; extractTimeoutSec: number; rarBinary: string } {
@@ -377,6 +398,7 @@ app.patch("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string
     serveDir: serveDirSchema.optional(),
     spaFallback: z.boolean().optional(),
     startCommand: startCommandSchema.nullable().optional(),
+    installCommand: installCommandSchema.nullable().optional(),
     port: z.number().int().min(1).max(65535).optional(),
     autoStart: z.boolean().optional(),
   }).parse(req.body);
@@ -395,6 +417,7 @@ app.patch("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string
     ...(body.serveDir !== undefined ? { serveDir: body.serveDir } : {}),
     ...(body.spaFallback !== undefined ? { spaFallback: body.spaFallback ? 1 : 0 } : {}),
     ...(body.startCommand !== undefined ? { startCommand: body.startCommand } : {}),
+    ...(body.installCommand !== undefined ? { installCommand: body.installCommand } : {}),
     ...(body.port !== undefined ? { port: body.port } : {}),
     ...(body.autoStart !== undefined ? { autoStart: body.autoStart ? 1 : 0 } : {}),
     updatedAt: now(),
@@ -557,14 +580,20 @@ app.delete("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: strin
   return { ok: true };
 });
 
-app.get("/api/system/info", async () => ({
-  lanIps: getLanIPv4(),
-  dashboardPort: env.DASHBOARD_PORT,
-  bindHost: env.BIND_HOST,
-  portRange: [env.PORT_RANGE_START, env.PORT_RANGE_END],
-}));
+app.get("/api/system/info", async () => {
+  const rows = store.db.select().from(dbSchema.settings).all();
+  const lanAccess = rows.find((r) => r.key === "lanAccess")?.value !== "false";
+  return {
+    lanIps: getLanIPv4(),
+    dashboardPort: env.DASHBOARD_PORT,
+    bindHost: env.BIND_HOST,
+    portRange: [env.PORT_RANGE_START, env.PORT_RANGE_END],
+    lanAccess,
+    projectHost: projectHost(),
+  };
+});
 
-const SETTING_KEYS = ["rarBinary", "maxUploadMb", "maxEntries", "maxDecompressedMb", "extractTimeoutSec"] as const;
+const SETTING_KEYS = ["rarBinary", "maxUploadMb", "maxEntries", "maxDecompressedMb", "extractTimeoutSec", "lanAccess"] as const;
 
 app.get("/api/settings", async () => {
   const rows = store.db.select().from(dbSchema.settings).all();
@@ -581,6 +610,7 @@ app.put("/api/settings", async (req, reply) => {
     maxEntries: z.coerce.number().int().min(1).max(100000).optional(),
     maxDecompressedMb: z.coerce.number().int().min(1).max(16384).optional(),
     extractTimeoutSec: z.coerce.number().int().min(10).max(1800).optional(),
+    lanAccess: z.enum(["true", "false"]).optional(),
   }).parse(req.body);
   for (const [k, v] of Object.entries(body)) {
     if (v === undefined) continue;

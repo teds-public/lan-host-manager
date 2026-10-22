@@ -1,68 +1,92 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { startManaged, stopManaged, isRunning, getExitCode } from "@lan/process-manager";
+import { writeLog } from "@lan/process-manager";
 
 const MIME: Record<string, string> = {
   ".html": "text/html", ".css": "text/css", ".js": "text/javascript",
   ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg",
   ".svg": "image/svg+xml", ".ico": "image/x-icon", ".woff2": "font/woff2",
+  ".map": "application/json", ".txt": "text/plain",
 };
 
 const servers = new Map<string, http.Server>();
-const nodeProcs = new Map<string, ChildProcess>();
 
-export function serveStatic(id: string, dir: string, port: number, spaFallback: boolean, host: string): void {
+function resolveServeFile(root: string, url: string | undefined, spaFallback: boolean): string | null {
+  const urlPath = decodeURIComponent(new URL(url ?? "/", "http://x").pathname);
+  const file = path.resolve(root, `.${urlPath}`);
+  if (file !== root && !file.startsWith(`${root}${path.sep}`)) return null;
+  let target = file;
+  try {
+    if (fs.existsSync(target) && fs.statSync(target).isDirectory()) target = path.join(target, "index.html");
+  } catch { return null; }
+  if (!fs.existsSync(target) && spaFallback) target = path.join(root, "index.html");
+  if (!fs.existsSync(target) || (target !== root && !target.startsWith(`${root}${path.sep}`))) return null;
+  return target;
+}
+
+export function serveStatic(
+  id: string, dir: string, port: number, spaFallback: boolean, host: string,
+  logFile: string,
+): Promise<void> {
   stopHosting(id);
   const root = path.resolve(dir);
-  const server = http.createServer((req, res) => {
-    try {
-      const urlPath = decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname);
-      let file = path.resolve(root, `.${urlPath}`);
-      if (!file.startsWith(root)) { res.writeHead(403); res.end("Forbidden"); return; }
-      if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, "index.html");
-      if (!fs.existsSync(file) && spaFallback) file = path.join(root, "index.html");
-      if (!fs.existsSync(file) || !file.startsWith(root)) { res.writeHead(404); res.end("Not found"); return; }
-      res.writeHead(200, { "Content-Type": MIME[path.extname(file)] ?? "application/octet-stream" });
-      fs.createReadStream(file).pipe(res);
-    } catch { res.writeHead(500); res.end("Error"); }
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); res.end("Method not allowed"); return; }
+      try {
+        const target = resolveServeFile(root, req.url, spaFallback);
+        if (!target) { res.writeHead(404); res.end("Not found"); return; }
+        res.writeHead(200, { "Content-Type": MIME[path.extname(target)] ?? "application/octet-stream" });
+        if (req.method === "HEAD") { res.end(); return; }
+        fs.createReadStream(target).on("error", () => {
+          try { res.writeHead(500); res.end("Error"); } catch { /* closed */ }
+        }).pipe(res);
+      } catch { res.writeHead(500); res.end("Error"); }
+    });
+    server.on("error", (err: NodeJS.ErrnoException) => {
+      servers.delete(id);
+      writeLog(logFile, "sys", `static server error: ${err.message}`);
+      reject(err);
+    });
+    server.listen(port, host, () => {
+      servers.set(id, server);
+      writeLog(logFile, "sys", `serving ${root} on ${host}:${port}`);
+      resolve();
+    });
   });
-  server.listen(port, host);
-  servers.set(id, server);
 }
 
 export function startNode(
   id: string, cwd: string, startCommand: string, port: number, host: string,
-  onLog: (tag: string, data: string) => void,
+  logFile: string, onExit?: (code: number | null) => void,
 ): number | null {
   stopHosting(id);
   const parts = startCommand.split(/\s+/).filter(Boolean);
-  const cmd = parts[0]!;
+  const cmd = parts[0];
+  if (!cmd || /[;&|`$]/.test(startCommand)) throw new Error("Invalid start command");
   const args = parts.slice(1);
-  const child = spawn(cmd, args, {
-    cwd, shell: false, windowsHide: true,
-    env: { ...process.env, PORT: String(port), HOST: host },
+  const p = startManaged(id, cmd, args, {
+    cwd, logFile, onExit,
+    env: { PORT: String(port), HOST: host },
   });
-  child.stdout?.on("data", (d: Buffer) => onLog("out", d.toString()));
-  child.stderr?.on("data", (d: Buffer) => onLog("err", d.toString()));
-  nodeProcs.set(id, child);
-  return child.pid ?? null;
+  return p.pid;
 }
 
 export function stopHosting(id: string): void {
-  servers.get(id)?.close();
-  servers.delete(id);
-  const c = nodeProcs.get(id);
-  if (c && c.exitCode === null) {
-    try {
-      if (process.platform === "win32" && c.pid) {
-        spawn("taskkill", ["/pid", String(c.pid), "/T", "/F"], { stdio: "ignore" });
-      } else c.kill("SIGTERM");
-    } catch { /* noop */ }
+  const srv = servers.get(id);
+  if (srv) {
+    try { srv.close(); } catch { /* ignore */ }
+    servers.delete(id);
   }
-  nodeProcs.delete(id);
+  stopManaged(id);
 }
 
-export function isHosting(id: string): boolean {
-  return servers.has(id) || (nodeProcs.get(id)?.exitCode === null && nodeProcs.has(id));
+export function isHosting(id: string, pid: number | null = null): boolean {
+  return servers.has(id) || isRunning(id, pid);
+}
+
+export function nodeExitCode(id: string): number | null {
+  return getExitCode(id);
 }

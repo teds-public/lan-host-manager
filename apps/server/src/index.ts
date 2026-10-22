@@ -15,8 +15,8 @@ import { pipeline } from "node:stream/promises";
 import { extractRar, validateArchiveName } from "@lan/archive";
 import { detectProject } from "@lan/detector";
 import { findFreePort, isPortFree } from "@lan/ports";
-import { serveStatic, startNode, stopHosting } from "@lan/hosting";
-import { logFileFor, stopManaged } from "@lan/process-manager";
+import { serveStatic, startNode, stopHosting, isHosting, nodeExitCode } from "@lan/hosting";
+import { logFileFor, readTail, writeLog } from "@lan/process-manager";
 import { activateDirectory, createBackup, listBackupRows, pruneBackups, restoreBackup } from "./backups.js";
 import { envSchema } from "@lan/config";
 
@@ -60,18 +60,18 @@ const pendingUpdates = new Map<string, {
 function startProjectRecord(p: {
   id: string; type: string; path: string; serveDir: string | null;
   spaFallback: number; port: number; startCommand: string | null;
-}): number | null {
+}): Promise<number | null> {
+  const logFile = logFileFor(store.logsDir, p.id);
   if (p.type === "static") {
     const dir = p.serveDir ? path.join(p.path, p.serveDir) : p.path;
     if (!fs.existsSync(dir)) throw new Error(`Serve directory missing: ${dir}`);
-    serveStatic(p.id, dir, p.port, !!p.spaFallback, env.BIND_HOST);
-    return null;
+    return serveStatic(p.id, dir, p.port, !!p.spaFallback, env.BIND_HOST, logFile).then(() => null);
   }
   if (!p.startCommand) throw new Error("No start command configured");
-  return startNode(p.id, p.path, p.startCommand, p.port, env.BIND_HOST, (tag, data) => {
-    const file = logFileFor(store.logsDir, p.id);
-    fs.appendFileSync(file, data.split("\n").filter(Boolean).map((l) => `[${new Date().toISOString()}] [${tag}] ${l}\n`).join(""));
-  });
+  return Promise.resolve(startNode(p.id, p.path, p.startCommand, p.port, env.BIND_HOST, logFile, (code) => {
+    store.db.update(dbSchema.projects).set({ status: "crashed", lastExitCode: code, pid: null, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+    writeLog(logFileFor(store.logsDir, p.id), "sys", `marked crashed (exit ${code})`);
+  }));
 }
 
 async function verifyRunning(id: string, pid: number | null): Promise<boolean> {
@@ -198,9 +198,29 @@ function stagingOf(pending: { outDir: string }): string {
 }
 
 function appendSysLog(projectId: string, msg: string): void {
-  const file = logFileFor(store.logsDir, projectId);
-  fs.appendFileSync(file, `[${new Date().toISOString()}] [sys] ${msg}\n`);
+  try {
+    writeLog(logFileFor(store.logsDir, projectId), "sys", msg);
+  } catch { /* ignore */ }
 }
+
+const rateBuckets = new Map<string, number[]>();
+function rateLimit(key: string, max: number, windowMs: number): boolean {
+  const t = Date.now();
+  const arr = (rateBuckets.get(key) ?? []).filter((x) => t - x < windowMs);
+  arr.push(t);
+  rateBuckets.set(key, arr);
+  return arr.length <= max;
+}
+
+app.addHook("preHandler", async (req, reply) => {
+  const ip = req.ip;
+  const authPath = req.url.startsWith("/api/auth/");
+  const limit = authPath ? 20 : 300;
+  if (req.url.startsWith("/api/") && !rateLimit(`${ip}:${authPath ? "auth" : "api"}`, limit, 60_000)) {
+    reply.code(429).send({ error: "rate-limited", message: "Too many requests. Slow down and retry." });
+    return;
+  }
+});
 
 app.post("/api/projects/:id/start", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
   const p = await getProject(store, req.params.id);
@@ -209,27 +229,21 @@ app.post("/api/projects/:id/start", async (req: FastifyRequest<{ Params: { id: s
     reply.code(400);
     return { error: "bad-request", message: "Unsupported project type. Cannot start." };
   }
+  if (isHosting(p.id, p.pid)) {
+    return { ok: true, alreadyRunning: true };
+  }
   if (!(await isPortFree(p.port))) {
     reply.code(409);
     return { error: "conflict", message: `Port ${p.port} is occupied by another process. Stop it or change the port.` };
   }
   try {
-    if (p.type === "static") {
-      const dir = p.serveDir ? path.join(p.path, p.serveDir) : p.path;
-      serveStatic(p.id, dir, p.port, !!p.spaFallback, env.BIND_HOST);
-    } else {
-      if (!p.startCommand) { reply.code(400); return { error: "bad-request", message: "No start command configured" }; }
-      const pid = startNode(p.id, p.path, p.startCommand, p.port, env.BIND_HOST, (tag, data) => {
-        const file = logFileFor(store.logsDir, p.id);
-        fs.appendFileSync(file, data.split("\n").filter(Boolean).map((l) => `[${new Date().toISOString()}] [${tag}] ${l}\n`).join(""));
-      });
-      store.db.update(dbSchema.projects).set({ pid, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
-    }
-    store.db.update(dbSchema.projects).set({ status: "running", lastExitCode: null, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+    const pid = await startProjectRecord(p);
+    store.db.update(dbSchema.projects).set({ pid, status: "running", lastExitCode: null, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
     appendSysLog(p.id, `started on port ${p.port}`);
     return { ok: true };
   } catch (e) {
-    store.db.update(dbSchema.projects).set({ status: "crashed", updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+    const code = p.type === "node" ? nodeExitCode(p.id) : null;
+    store.db.update(dbSchema.projects).set({ status: "crashed", lastExitCode: code, pid: null, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
     reply.code(500);
     return { error: "start-failed", message: (e as Error).message };
   }
@@ -239,7 +253,6 @@ app.post("/api/projects/:id/stop", async (req: FastifyRequest<{ Params: { id: st
   const p = await getProject(store, req.params.id);
   if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
   stopHosting(p.id);
-  stopManaged(p.id);
   store.db.update(dbSchema.projects).set({ status: "stopped", pid: null, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
   appendSysLog(p.id, "stopped");
   return { ok: true };
@@ -249,35 +262,28 @@ app.post("/api/projects/:id/restart", async (req: FastifyRequest<{ Params: { id:
   const p = await getProject(store, req.params.id);
   if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
   stopHosting(p.id);
-  stopManaged(p.id);
-  await new Promise((r) => setTimeout(r, 500));
+  await new Promise((r) => setTimeout(r, 800));
   if (!(await isPortFree(p.port))) {
     reply.code(409);
     return { error: "conflict", message: `Port ${p.port} is occupied. Free it, then start again.` };
   }
-  if (p.type === "static") {
-    const dir = p.serveDir ? path.join(p.path, p.serveDir) : p.path;
-    serveStatic(p.id, dir, p.port, !!p.spaFallback, env.BIND_HOST);
-  } else if (p.startCommand) {
-    const pid = startNode(p.id, p.path, p.startCommand, p.port, env.BIND_HOST, () => undefined);
-    store.db.update(dbSchema.projects).set({ pid }).where(eq(dbSchema.projects.id, p.id)).run();
+  try {
+    const pid = await startProjectRecord(p);
+    store.db.update(dbSchema.projects).set({ status: "running", pid, lastExitCode: null, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+    return { ok: true };
+  } catch (e) {
+    store.db.update(dbSchema.projects).set({ status: "crashed", updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+    reply.code(500);
+    return { error: "start-failed", message: (e as Error).message };
   }
-  store.db.update(dbSchema.projects).set({ status: "running", updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
-  return { ok: true };
 });
 
 app.get("/api/projects/:id/logs", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
   const p = await getProject(store, req.params.id);
   if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
   const file = p.logFile ?? logFileFor(store.logsDir, p.id);
-  if (!fs.existsSync(file)) return { logs: "" };
-  const st = fs.statSync(file);
-  const tail = Math.min(st.size, 200 * 1024);
-  const buf = Buffer.alloc(tail);
-  const fd = fs.openSync(file, "r");
-  fs.readSync(fd, buf, 0, tail, st.size - tail);
-  fs.closeSync(fd);
-  return { logs: buf.toString("utf-8") };
+  const limit = Math.min(Number((req.query as { tail?: string }).tail ?? 200) || 200, 2000) * 1024;
+  return { logs: readTail(file, limit) };
 });
 
 app.patch("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
@@ -356,7 +362,6 @@ app.post("/api/updates/:id/confirm", async (req: FastifyRequest<{ Params: { id: 
   }
 
   stopHosting(p.id);
-  stopManaged(p.id);
   const backup = createBackup(store, p.id, p.version, p.path);
   const backupId = backup.id;
   const backupDir = backup.path;
@@ -378,7 +383,7 @@ app.post("/api/updates/:id/confirm", async (req: FastifyRequest<{ Params: { id: 
 
     const updated = (await getProject(store, p.id))!;
     if (!(await isPortFree(updated.port))) throw new Error(`Port ${updated.port} is occupied. Restore the backup or free the port.`);
-    const pid = startProjectRecord(updated);
+    const pid = await startProjectRecord(updated);
     const healthy = await verifyRunning(updated.id, pid);
     if (!healthy) throw new Error("New version failed to start. Restoring previous version.");
     store.db.update(dbSchema.projects).set({ status: "running", pid, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
@@ -387,12 +392,11 @@ app.post("/api/updates/:id/confirm", async (req: FastifyRequest<{ Params: { id: 
   } catch (e) {
     try {
       stopHosting(p.id);
-      stopManaged(p.id);
       activateDirectory(store, p.id, backupDir);
       const restored = (await getProject(store, p.id))!;
-      const pid = await isPortFree(restored.port) ? startProjectRecord(restored) : null;
+      const pid = await isPortFree(restored.port) ? await startProjectRecord(restored) : null;
       store.db.update(dbSchema.projects).set({
-        status: pid || restored.type === "static" ? "running" : "crashed",
+        status: pid !== null || restored.type === "static" ? "running" : "crashed",
         pid, updatedAt: now(),
       }).where(eq(dbSchema.projects.id, p.id)).run();
       appendSysLog(p.id, `update failed, restored v${p.version}: ${(e as Error).message}`);
@@ -421,7 +425,6 @@ app.post("/api/projects/:id/rollback/:backupId", async (
   const p = await getProject(store, req.params.id);
   if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
   stopHosting(p.id);
-  stopManaged(p.id);
   let version: number;
   try {
     version = restoreBackup(store, p.id, req.params.backupId).version;
@@ -441,7 +444,6 @@ app.delete("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: strin
     deleteBackups: z.boolean().default(false),
   }).parse(req.body ?? {});
   stopHosting(p.id);
-  stopManaged(p.id);
   const managedRoot = path.resolve(store.projectsDir);
   const projectPath = path.resolve(p.path);
   if (body.removeFiles) {
@@ -484,25 +486,54 @@ app.put("/api/settings", async (req) => {
 async function reconcile(): Promise<void> {
   const rows = await listProjects(store);
   for (const p of rows) {
-    const alive = p.pid ? (() => { try { process.kill(p.pid, 0); return true; } catch { return false; } })() : false;
-    if (p.status === "running" && !alive) {
-      store.db.update(dbSchema.projects).set({ status: "crashed", pid: null, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+    const owned = isHosting(p.id, p.pid);
+    if (p.status === "running" && !owned) {
+      const code = nodeExitCode(p.id);
+      store.db.update(dbSchema.projects).set({ status: "crashed", pid: null, lastExitCode: code, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+      appendSysLog(p.id, `process gone (exit ${code ?? "?"}), marked crashed`);
+      continue;
     }
-    if (p.autoStart && (p.status === "stopped" || p.status === "crashed")) {
+    if (p.status === "starting") {
+      store.db.update(dbSchema.projects).set({ status: owned ? "running" : "unknown", updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+      continue;
+    }
+    if (p.status === "unknown" && owned) {
+      store.db.update(dbSchema.projects).set({ status: "running", updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+      continue;
+    }
+    if (p.autoStart && (p.status === "stopped" || p.status === "crashed") && !owned) {
+      if (!fs.existsSync(p.path)) {
+        store.db.update(dbSchema.projects).set({ status: "unknown", updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+        appendSysLog(p.id, "managed files missing, marked unknown");
+        continue;
+      }
+      if (!(await isPortFree(p.port))) {
+        appendSysLog(p.id, `auto-start skipped, port ${p.port} occupied`);
+        continue;
+      }
       try {
-        if (p.type === "static") {
-          const dir = p.serveDir ? path.join(p.path, p.serveDir) : p.path;
-          if (fs.existsSync(dir) && await isPortFree(p.port)) {
-            serveStatic(p.id, dir, p.port, !!p.spaFallback, env.BIND_HOST);
-            store.db.update(dbSchema.projects).set({ status: "running", updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
-          }
-        } else if (p.startCommand && await isPortFree(p.port)) {
-          const pid = startNode(p.id, p.path, p.startCommand, p.port, env.BIND_HOST, () => undefined);
-          store.db.update(dbSchema.projects).set({ status: "running", pid, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
-        }
-      } catch { /* mark crashed on next cycle */ }
+        store.db.update(dbSchema.projects).set({ status: "starting", updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+        const pid = await startProjectRecord(p);
+        store.db.update(dbSchema.projects).set({ status: "running", pid, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+      } catch (e) {
+        store.db.update(dbSchema.projects).set({ status: "crashed", updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+        appendSysLog(p.id, `auto-start failed: ${(e as Error).message}`);
+      }
     }
   }
+}
+
+function sweepStaleStaging(maxAgeMs = 24 * 3600 * 1000): void {
+  try {
+    for (const entry of fs.readdirSync(store.stagingDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const full = path.join(store.stagingDir, entry.name);
+      try {
+        const age = Date.now() - fs.statSync(full).mtimeMs;
+        if (age > maxAgeMs) fs.rmSync(full, { recursive: true, force: true });
+      } catch { /* ignore */ }
+    }
+  } catch { /* staging may not exist yet */ }
 }
 
 const webDist = new URL("../../web/dist", import.meta.url);
@@ -515,7 +546,28 @@ if (fs.existsSync(webDist)) {
 }
 
 await reconcile();
+sweepStaleStaging();
 setInterval(() => { reconcile().catch(() => undefined); }, 30000);
 
-await app.listen({ port: env.DASHBOARD_PORT, host: env.BIND_HOST });
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Received ${signal}, stopping hosted projects...`);
+  try {
+    const rows = await listProjects(store);
+    for (const p of rows) stopHosting(p.id);
+    await app.close();
+  } catch { /* exiting anyway */ }
+  process.exit(0);
+}
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+
+try {
+  await app.listen({ port: env.DASHBOARD_PORT, host: env.BIND_HOST });
+} catch (e) {
+  console.error(`Cannot listen on ${env.BIND_HOST}:${env.DASHBOARD_PORT}: ${(e as Error).message}`);
+  process.exit(1);
+}
 console.log(`Dashboard: http://${env.BIND_HOST}:${env.DASHBOARD_PORT}`);

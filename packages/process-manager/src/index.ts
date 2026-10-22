@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
+import { writeLog, logFileFor } from "./log.js";
+
+export { writeLog, logFileFor, readTail } from "./log.js";
 
 export interface ManagedProcess {
   id: string;
@@ -9,72 +10,82 @@ export interface ManagedProcess {
   logFile: string;
 }
 
-const procs = new Map<string, ChildProcess>();
-
-export function logFileFor(logsDir: string, id: string): string {
-  fs.mkdirSync(logsDir, { recursive: true });
-  return path.join(logsDir, `${id}.log`);
+interface Entry {
+  child: ChildProcess;
+  logFile: string;
+  exitCode: number | null;
+  onExit?: (code: number | null) => void;
+  killTimer?: NodeJS.Timeout;
 }
 
-function appendLog(logFile: string, tag: string, data: string): void {
-  const line = data.split("\n").filter(Boolean).map((l) => `[${new Date().toISOString()}] [${tag}] ${l}\n`).join("");
-  fs.appendFileSync(logFile, line);
-  rotateIfNeeded(logFile);
-}
-
-function rotateIfNeeded(logFile: string): void {
-  try {
-    const st = fs.statSync(logFile);
-    if (st.size > 5 * 1024 * 1024) {
-      fs.renameSync(logFile, `${logFile}.1`);
-    }
-  } catch { /* ignore */ }
-}
+const procs = new Map<string, Entry>();
 
 export function startManaged(
   id: string,
   command: string,
   args: string[],
-  opts: { cwd: string; env?: Record<string, string>; logFile: string },
+  opts: { cwd: string; env?: Record<string, string>; logFile: string; onExit?: (code: number | null) => void },
 ): ManagedProcess {
   stopManaged(id);
-  const logFile = opts.logFile;
-  fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const child = spawn(command, args, {
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env },
     shell: false,
     windowsHide: true,
   });
-  procs.set(id, child);
-  child.stdout?.on("data", (d: Buffer) => appendLog(logFile, "out", d.toString()));
-  child.stderr?.on("data", (d: Buffer) => appendLog(logFile, "err", d.toString()));
-  child.on("exit", (code) => appendLog(logFile, "sys", `process exited with code ${code}`));
-  return { id, pid: child.pid ?? null, exitCode: null, logFile };
+  const entry: Entry = { child, logFile: opts.logFile, exitCode: null, onExit: opts.onExit };
+  procs.set(id, entry);
+  writeLog(opts.logFile, "sys", `spawned pid ${child.pid ?? "?"}: ${command} ${args.join(" ")}`);
+  child.stdout?.on("data", (d: Buffer) => writeLog(entry.logFile, "out", d.toString()));
+  child.stderr?.on("data", (d: Buffer) => writeLog(entry.logFile, "err", d.toString()));
+  child.on("error", (err) => writeLog(entry.logFile, "sys", `spawn error: ${err.message}`));
+  child.on("exit", (code, signal) => {
+    entry.exitCode = code;
+    writeLog(entry.logFile, "sys", `process exited code=${code} signal=${signal ?? "none"}`);
+    try { entry.onExit?.(code); } catch { /* never throw from exit handler */ }
+  });
+  return { id, pid: child.pid ?? null, exitCode: null, logFile: opts.logFile };
 }
 
-export function stopManaged(id: string): boolean {
-  const child = procs.get(id);
-  if (!child || child.exitCode !== null) { procs.delete(id); return false; }
+/** Stop only the process this manager started for id. Never kills by raw PID. */
+export function stopManaged(id: string, timeoutMs = 8000): boolean {
+  const entry = procs.get(id);
+  if (!entry || entry.exitCode !== null) { procs.delete(id); return false; }
+  const { child } = entry;
   try {
-    if (process.platform === "win32" && child.pid) {
-      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+    if (process.platform === "win32") {
+      if (child.pid) spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      procs.delete(id);
     } else {
       child.kill("SIGTERM");
-      setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* noop */ } }, 5000).unref?.();
+      entry.killTimer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch { /* already gone */ }
+        procs.delete(id);
+      }, timeoutMs);
+      entry.killTimer.unref?.();
+      child.once("exit", () => {
+        if (entry.killTimer) clearTimeout(entry.killTimer);
+        procs.delete(id);
+      });
     }
-  } catch { /* noop */ }
-  procs.delete(id);
+  } catch {
+    procs.delete(id);
+  }
   return true;
 }
 
+/** True only if this manager still owns a live child for id. Falls back to PID liveness. */
 export function isRunning(id: string, pid: number | null): boolean {
-  const child = procs.get(id);
-  if (child) return child.exitCode === null;
+  const entry = procs.get(id);
+  if (entry) return entry.exitCode === null;
   if (!pid) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-export function getChild(id: string): ChildProcess | undefined {
-  return procs.get(id);
+export function getExitCode(id: string): number | null {
+  return procs.get(id)?.exitCode ?? null;
+}
+
+export function stopAll(): void {
+  for (const id of [...procs.keys()]) stopManaged(id);
 }

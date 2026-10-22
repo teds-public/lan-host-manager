@@ -267,20 +267,6 @@ function ProjectCard({ p, refresh }: { p: Project; refresh: () => void }) {
     finally { setBusy(false); }
   }
 
-  async function replace(f: File) {
-    setMsg(null); setBusy(true);
-    try {
-      const fd = new FormData();
-      fd.append("file", f);
-      const res = await fetch(`/api/projects/${p.id}/replace`, { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message);
-      say(true, `Files replaced (v${data.version}).`);
-      refresh();
-    } catch (e) { say(false, (e as Error).message); }
-    finally { setBusy(false); }
-  }
-
   async function loadDetails() {
     if (showConfig) { setShowConfig(false); return; }
     setCfgBusy(true);
@@ -370,11 +356,6 @@ function ProjectCard({ p, refresh }: { p: Project; refresh: () => void }) {
         <button type="button" onClick={() => action("stop")} disabled={busy || !isRunning} aria-label={`Stop ${p.name}`} className={`${btn} bg-slate-600 text-white hover:bg-slate-700`}>Stop</button>
         <button type="button" onClick={() => action("restart")} disabled={busy} aria-label={`Restart ${p.name}`} className={`${btn} bg-amber-500 text-white hover:bg-amber-600`}>Restart</button>
         {isRunning && <a href={p.lanUrl} target="_blank" rel="noreferrer" aria-label={`Open ${p.name} in a new tab`} className={`${btn} bg-blue-600 text-white hover:bg-blue-700`}>Open</a>}
-        <label className={`${btn} cursor-pointer bg-violet-600 text-white hover:bg-violet-700`}>
-          Update
-          <input type="file" accept=".rar,.zip" aria-label={`Upload replacement archive for ${p.name}`} className="hidden" disabled={busy}
-            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) setConfirm({ title: `Update ${p.name}?`, body: `Replace all files with ${f.name}. No backup is kept.`, label: "Replace files", run: () => replace(f) }); }} />
-        </label>
         <button type="button" onClick={openFolder} aria-label={`Open project folder for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>Folder</button>
         <button type="button" onClick={viewLogs} disabled={logsBusy} aria-expanded={showLogs} aria-label={`${showLogs ? "Hide" : "View"} logs for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>{logsBusy ? "Loading…" : showLogs ? "Hide logs" : "Logs"}</button>
         <button type="button" onClick={loadDetails} disabled={cfgBusy} aria-expanded={showConfig} aria-label={`${showConfig ? "Hide" : "Show"} configuration for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>{cfgBusy ? "Loading…" : "Config"}</button>
@@ -402,7 +383,7 @@ function ProjectCard({ p, refresh }: { p: Project; refresh: () => void }) {
                 <label className={labelCls}>Serve directory
                   <input aria-label="Serve directory" className={`${inputCls} mt-1 font-mono`} value={cfg.serveDir} onChange={(e) => setCfg({ ...cfg, serveDir: e.target.value })} placeholder="(project root)" />
                 </label>
-                <label className="flex min-h-[36px] items-center gap-2 text-sm text-slate-700">
+                <label className="flex min-h-[36px] items-center gap-2 text-sm text-slate-700" title="Unknown paths serve index.html instead of 404. Needed for client-side routers (React Router, Vue Router). Static projects only.">
                   <input type="checkbox" className="h-4 w-4 accent-blue-600" checked={cfg.spaFallback} onChange={(e) => setCfg({ ...cfg, spaFallback: e.target.checked })} /> SPA fallback
                 </label>
               </>
@@ -419,7 +400,7 @@ function ProjectCard({ p, refresh }: { p: Project; refresh: () => void }) {
               </>
             )}
           </div>
-          <label className="mt-3 flex min-h-[36px] items-center gap-2 text-sm text-slate-700">
+          <label className="mt-3 flex min-h-[36px] items-center gap-2 text-sm text-slate-700" title="Automatically start this project when the server boots, and restart it if it crashed. Skipped when files are missing or the port is occupied.">
             <input type="checkbox" className="h-4 w-4 accent-blue-600" checked={cfg.autoStart} onChange={(e) => setCfg({ ...cfg, autoStart: e.target.checked })} /> Auto-start on server boot
           </label>
           <div className="mt-2">

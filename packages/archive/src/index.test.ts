@@ -93,19 +93,18 @@ describe("zip", () => {
     expect(readFileSync(join(r.rootDir, "ok.txt"), "utf-8")).toBe("ok");
   });
 
-  it("unwraps a single real dir despite junk entries", () => {
+  it("hosts the extraction root as-is, junk stripped", () => {
     const dir = mkdtempSync(join(tmpdir(), "zip-"));
     const archive = join(dir, "t.zip");
     writeFileSync(archive, buildZip([
       { name: "__MACOSX/._root", data: Buffer.from("junk"), method: 0 },
       { name: "root/a/index.html", data: Buffer.from("<h1>a</h1>"), method: 0 },
-      { name: "root/b/index.html", data: Buffer.from("<h1>b</h1>"), method: 0 },
-      { name: "root/c/index.html", data: Buffer.from("<h1>c</h1>"), method: 0 },
       { name: "root/d/index.html", data: Buffer.from("<h1>d</h1>"), method: 0 },
     ]));
     const r = extractZip(archive, dir, { maxEntries: 100, maxDecompressedMb: 64, timeoutSec: 30 });
-    expect(r.entries).toBe(4);
-    expect(readFileSync(join(r.rootDir, "a", "index.html"), "utf-8")).toBe("<h1>a</h1>");
+    expect(r.entries).toBe(2);
+    expect(r.rootDir).toBe(r.outDir);
+    expect(readFileSync(join(r.rootDir, "root", "a", "index.html"), "utf-8")).toBe("<h1>a</h1>");
     expect(existsSync(join(r.rootDir, "__MACOSX"))).toBe(false);
   });
 

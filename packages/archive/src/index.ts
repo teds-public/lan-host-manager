@@ -35,17 +35,6 @@ function isJunkEntry(rel: string): boolean {
   return JUNK_RE.test(rel.replace(/\\/g, "/"));
 }
 
-function unwrapSingleDir(outDir: string): string | null {
-  const entries = fs.readdirSync(outDir);
-  const real = entries.filter((e) => !isJunkEntry(e));
-  if (real.length !== 1) return null;
-  const only = path.join(outDir, real[0]!);
-  try {
-    if (fs.statSync(only).isDirectory()) return only;
-  } catch { return null; }
-  return null;
-}
-
 export function stripJunkEntries(outDir: string): void {
   const walk = (dir: string): void => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -169,7 +158,7 @@ export async function extractRar(
   let total = 0;
   for (const rel of entries) total += fs.statSync(path.join(outDir, rel)).size;
   checkLimits(entries.length, total, limits);
-  return { outDir, rootDir: unwrapSingleDir(outDir) ?? outDir, entries: entries.length };
+  return { outDir, rootDir: outDir, entries: entries.length };
 }
 
 interface ZipEntry {
@@ -269,7 +258,7 @@ export function extractZip(
     throw err;
   }
   stripJunkEntries(outDir);
-  return { outDir, rootDir: unwrapSingleDir(outDir) ?? outDir, entries: written.length };
+  return { outDir, rootDir: outDir, entries: written.length };
 }
 
 export async function extractArchive(

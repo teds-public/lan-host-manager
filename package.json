@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
+    "start": "node apps/server/dist/index.js",
     "lint": "turbo run lint --if-present",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test"

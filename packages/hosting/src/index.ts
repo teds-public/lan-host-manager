@@ -34,6 +34,10 @@ export function serveStatic(
   const root = path.resolve(dir);
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "*");
+      if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
       if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); res.end("Method not allowed"); return; }
       try {
         const target = resolveServeFile(root, req.url, spaFallback);

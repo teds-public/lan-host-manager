@@ -4,11 +4,11 @@ LAN-only local web hosting platform. Upload `.rar` archives of web projects from
 
 ## Windows setup
 
-1. Install Node.js 20+ and pnpm 9+ (`npm i -g pnpm`).
+1. Install Node.js 20+.
 2. Install WinRAR (provides extraction) — or set `RAR_BINARY` to your `unrar.exe` path.
-3. `pnpm install`
+3. `npm install`
 4. Copy `.env.example` to `.env`, set a strong `SESSION_SECRET`.
-5. `pnpm build`, then `pnpm start` (or `pnpm dev` per app).
+5. `npm run build`, then `npm start` (or `npm run dev` per app).
 6. Open `http://<host-lan-ip>:3000` from any LAN device.
 7. Create the admin account on first launch.
 
@@ -31,7 +31,7 @@ Never open these ports on public networks, and never configure router port forwa
 
 ## Scripts
 
-- `pnpm dev` / `pnpm build` / `pnpm typecheck` / `pnpm test` (turborepo)
+- `npm run dev` / `npm run build` / `npm run typecheck` / `npm test` (turborepo)
 
 ## Security notes
 

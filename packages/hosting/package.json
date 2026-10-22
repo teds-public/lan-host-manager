@@ -11,8 +11,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@lan/process-manager": "workspace:*",
-    "@lan/shared": "workspace:*"
+    "@lan/process-manager": "*",
+    "@lan/shared": "*"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

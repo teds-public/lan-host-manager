@@ -81,8 +81,8 @@ const startCommandSchema = z.string().max(500).refine(
 );
 
 const installCommandSchema = z.string().max(500).refine(
-  (s) => /^(npm|pnpm|yarn)\b/.test(s.trim()) && !/[;&|`$<>()\n\r%!^"']/.test(s),
-  { message: "installCommand must be an npm/pnpm/yarn invocation without shell operators" },
+  (s) => /^npm\b/.test(s.trim()) && !/[;&|`$<>()\n\r%!^"']/.test(s),
+  { message: "installCommand must be an npm invocation without shell operators" },
 );
 
 function projectHost(): string {
@@ -294,7 +294,7 @@ app.post("/api/projects/:id/install", async (req: FastifyRequest<{ Params: { id:
     reply.code(400);
     return { error: "bad-request", message: "No package.json found." };
   }
-  if (p.installCommand && !/^(npm|pnpm|yarn)\b/.test(p.installCommand.trim())) {
+  if (p.installCommand && !/^npm\b/.test(p.installCommand.trim())) {
     reply.code(400);
     return { error: "bad-request", message: "Stored install command is not an npm-compatible invocation. Refusing to run it." };
   }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const projectTypeSchema = z.enum(["static", "node", "unknown"]);
+export const projectTypeSchema = z.enum(["static", "node", "files"]);
 export type ProjectType = z.infer<typeof projectTypeSchema>;
 
 export const projectStatusSchema = z.enum([

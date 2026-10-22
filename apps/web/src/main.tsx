@@ -62,7 +62,7 @@ const STATUS_STYLE: Record<string, string> = {
 const TYPE_STYLE: Record<string, string> = {
   node: "bg-violet-100 text-violet-800 ring-violet-200",
   static: "bg-cyan-100 text-cyan-800 ring-cyan-200",
-  unknown: "bg-red-100 text-red-800 ring-red-200",
+  files: "bg-slate-200 text-slate-700 ring-slate-300",
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -178,8 +178,7 @@ function ImportBox({ onDone }: { onDone: () => void }) {
     finally { setBusy(false); }
   }
 
-  const invalid = review?.detection.type === "unknown";
-  const canConfirm = review !== null && !invalid && name.trim().length > 0 && !busy;
+  const canConfirm = review !== null && name.trim().length > 0 && !busy;
 
   return (
     <section aria-labelledby="import-heading" className={`${cardCls} p-4 sm:p-5`}>
@@ -215,12 +214,9 @@ function ImportBox({ onDone }: { onDone: () => void }) {
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm text-slate-600">Detected type:</span>
             <TypeBadge type={review.detection.type} />
-            {invalid
-              ? <span className="text-sm font-medium text-red-700">Unsupported runtime — cannot be hosted.</span>
-              : <span className="text-sm text-emerald-700">Ready to review</span>}
+            <span className="text-sm text-emerald-700">Ready to review</span>
           </div>
-          {!invalid && (
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label className={labelCls}>Project name
                 <input aria-label="Project name" className={`${inputCls} mt-1`} value={name} onChange={(e) => setName(e.target.value)} placeholder="my-site" />
               </label>
@@ -228,13 +224,12 @@ function ImportBox({ onDone }: { onDone: () => void }) {
                 <input aria-label="Start command" className={`${inputCls} mt-1 font-mono`} value={startCommand} onChange={(e) => setStartCommand(e.target.value)} placeholder="npm start" />
               </label>
             </div>
-          )}
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button type="button" disabled={!canConfirm} onClick={confirm} className={`${btn} bg-blue-600 text-white hover:bg-blue-700`}>
               {busy ? "Importing…" : "Confirm and import"}
             </button>
             <button type="button" disabled={busy} onClick={() => { setReview(null); setFile(null); }} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>Discard</button>
-            {!name.trim() && !invalid && <span className="text-xs text-slate-500">Enter a name to enable import.</span>}
+            {!name.trim() && <span className="text-xs text-slate-500">Enter a name to enable import.</span>}
           </div>
         </div>
       )}
@@ -344,6 +339,14 @@ function ProjectCard({ p, refresh }: { p: Project; refresh: () => void }) {
     finally { setLogsBusy(false); }
   }
 
+  async function openFolder() {
+    setMsg(null);
+    try {
+      const d = await api<{ ok: boolean; path: string }>(`/api/projects/${p.id}/open-folder`, { method: "POST" });
+      say(true, `Opened ${d.path} in file manager.`);
+    } catch (e) { say(false, (e as Error).message); }
+  }
+
   const isRunning = p.status === "running";
 
   return (
@@ -368,6 +371,12 @@ function ProjectCard({ p, refresh }: { p: Project; refresh: () => void }) {
         <button type="button" onClick={() => action("stop")} disabled={busy || !isRunning} aria-label={`Stop ${p.name}`} className={`${btn} bg-slate-600 text-white hover:bg-slate-700`}>Stop</button>
         <button type="button" onClick={() => action("restart")} disabled={busy} aria-label={`Restart ${p.name}`} className={`${btn} bg-amber-500 text-white hover:bg-amber-600`}>Restart</button>
         {isRunning && <a href={p.lanUrl} target="_blank" rel="noreferrer" aria-label={`Open ${p.name} in a new tab`} className={`${btn} bg-blue-600 text-white hover:bg-blue-700`}>Open</a>}
+        <label className={`${btn} cursor-pointer bg-violet-600 text-white hover:bg-violet-700`}>
+          Update
+          <input type="file" accept=".rar,.zip" aria-label={`Upload replacement archive for ${p.name}`} className="hidden" disabled={busy}
+            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) setConfirm({ title: `Update ${p.name}?`, body: `Replace all files with ${f.name}. No backup is kept.`, label: "Replace files", run: () => replace(f) }); }} />
+        </label>
+        <button type="button" onClick={openFolder} aria-label={`Open project folder for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>Folder</button>
         <button type="button" onClick={viewLogs} disabled={logsBusy} aria-expanded={showLogs} aria-label={`${showLogs ? "Hide" : "View"} logs for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>{logsBusy ? "Loading…" : showLogs ? "Hide logs" : "Logs"}</button>
         <button type="button" onClick={loadDetails} disabled={cfgBusy} aria-expanded={showConfig} aria-label={`${showConfig ? "Hide" : "Show"} configuration for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>{cfgBusy ? "Loading…" : "Config"}</button>
         <button type="button" onClick={() => setShowMore((s) => !s)} aria-expanded={showMore} aria-label={`More actions for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>
@@ -378,11 +387,6 @@ function ProjectCard({ p, refresh }: { p: Project; refresh: () => void }) {
 
       {showMore && (
         <div className="mt-2 flex flex-wrap gap-2 rounded-lg bg-red-50/60 p-2 ring-1 ring-red-100" role="group" aria-label={`Dangerous actions for ${p.name}`}>
-          <label className={`${btn} cursor-pointer bg-violet-600 text-white hover:bg-violet-700`}>
-            Update
-            <input type="file" accept=".rar,.zip" aria-label={`Upload replacement archive for ${p.name}`} className="hidden" disabled={busy}
-              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) setConfirm({ title: `Update ${p.name}?`, body: `Replace all files with ${f.name}. No backup is kept.`, label: "Replace files", run: () => replace(f) }); }} />
-          </label>
           {p.type === "node" && <button type="button" onClick={() => setConfirm({ title: `Install dependencies for ${p.name}?`, body: "Runs the package manager inside the project directory. Check the install command in Config first.", label: "Install", run: install })} disabled={busy} className={`${btn} bg-cyan-700 text-white hover:bg-cyan-800`}>Install</button>}
           <button type="button" onClick={() => setConfirm({ title: `Remove ${p.name}?`, body: "Stop the project and unregister it. Managed files can optionally be deleted.", label: "Remove", danger: true, run: async () => { setMsg(null); await fetch(`/api/projects/${p.id}`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ removeFiles: window.confirm("Also delete managed files?") }) }); refresh(); } })} className={`${btn} bg-red-600 text-white hover:bg-red-700`}>Remove</button>
         </div>

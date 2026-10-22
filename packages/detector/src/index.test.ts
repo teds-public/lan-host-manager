@@ -27,8 +27,9 @@ describe("detector", () => {
     expect(r.serveDirCandidates).toContain("dist");
   });
 
-  it("reports unknown for empty dirs", () => {
+  it("hosts other archives as plain files", () => {
     const r = detectProject(tmp());
-    expect(r.type).toBe("unknown");
+    expect(r.type).toBe("files");
+    expect(r.serveDirCandidates).toContain(".");
   });
 });

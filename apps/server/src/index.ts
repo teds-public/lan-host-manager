@@ -39,10 +39,11 @@ function startProjectRecord(p: {
 }): Promise<number | null> {
   const logFile = logFileFor(store.logsDir, p.id);
   const host = projectHost();
-  if (p.type === "static") {
+  if (p.type === "static" || p.type === "files") {
     const dir = p.serveDir ? path.join(p.path, p.serveDir) : p.path;
     if (!fs.existsSync(dir)) throw new Error(`Serve directory missing: ${dir}`);
-    return serveStatic(p.id, dir, p.port, !!p.spaFallback, host, logFile).then(() => null);
+    const spa = p.type === "static" ? !!p.spaFallback : false;
+    return serveStatic(p.id, dir, p.port, spa, host, logFile).then(() => null);
   }
   if (!p.startCommand) throw new Error("No start command configured");
   return Promise.resolve(startNode(p.id, p.path, p.startCommand, p.port, host, logFile, (code) => {
@@ -236,10 +237,6 @@ app.addHook("preHandler", async (req, reply) => {
 app.post("/api/projects/:id/start", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
   const p = await getProject(store, req.params.id);
   if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
-  if (p.type === "unknown") {
-    reply.code(400);
-    return { error: "bad-request", message: "Unsupported project type. Cannot start." };
-  }
   if (isHosting(p.id, p.pid)) {
     return { ok: true, alreadyRunning: true };
   }
@@ -326,6 +323,36 @@ app.get("/api/projects/:id/logs", async (req: FastifyRequest<{ Params: { id: str
   return { logs: readTail(file, limit) };
 });
 
+app.post("/api/projects/:id/open-folder", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+  const p = await getProject(store, req.params.id);
+  if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
+  const managedRoot = path.resolve(store.projectsDir);
+  const projectPath = path.resolve(p.path);
+  if (projectPath !== managedRoot && !projectPath.startsWith(`${managedRoot}${path.sep}`)) {
+    reply.code(400);
+    return { error: "bad-request", message: "Invalid project path." };
+  }
+  if (!fs.existsSync(projectPath)) {
+    reply.code(404);
+    return { error: "not-found", message: "Project files not found on disk." };
+  }
+  try {
+    const { execFile } = await import("node:child_process");
+    const target = projectPath;
+    if (process.platform === "win32") {
+      execFile("explorer.exe", [target], { windowsHide: true }, () => undefined);
+    } else if (process.platform === "darwin") {
+      execFile("open", [target], () => undefined);
+    } else {
+      execFile("xdg-open", [target], () => undefined);
+    }
+    return { ok: true, path: projectPath };
+  } catch (e) {
+    reply.code(500);
+    return { error: "open-failed", message: (e as Error).message, path: projectPath };
+  }
+});
+
 app.patch("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
   const p = await getProject(store, req.params.id);
   if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
@@ -390,11 +417,6 @@ app.post("/api/projects/:id/replace", async (req: FastifyRequest<{ Params: { id:
     return { error: "bad-request", message: (e as Error).message };
   }
   const detection = detectProject(result.rootDir);
-  if (detection.type === "unknown") {
-    fs.rmSync(staging, { recursive: true, force: true });
-    reply.code(400);
-    return { error: "bad-request", message: "Unsupported project type in archive." };
-  }
   const managedRoot = path.resolve(store.projectsDir);
   const dest = path.resolve(path.join(store.projectsDir, p.id));
   if (dest !== managedRoot && !dest.startsWith(`${managedRoot}${path.sep}`)) {

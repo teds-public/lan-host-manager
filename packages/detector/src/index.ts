@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 export interface DetectionResult {
-  type: "static" | "node" | "unknown";
+  type: "static" | "node" | "files";
   rootDir: string;
   serveDirCandidates: string[];
   entryFile?: string;
@@ -37,5 +37,6 @@ export function detectProject(rootDir: string): DetectionResult {
   if (serveDirCandidates.length > 0) {
     return { type: "static", rootDir, serveDirCandidates, entryFile: "index.html", notes };
   }
-  return { type: "unknown", rootDir, serveDirCandidates: [], notes: ["No index.html or package.json detected. Unsupported runtime."] };
+  notes.push("No index.html or package.json detected. Hosting as plain files.");
+  return { type: "files", rootDir, serveDirCandidates: ["."], notes };
 }

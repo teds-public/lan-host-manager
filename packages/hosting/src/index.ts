@@ -69,7 +69,7 @@ export function startNode(
   stopHosting(id);
   const parts = startCommand.split(/\s+/).filter(Boolean);
   const cmd = parts[0];
-  if (!cmd || /[;&|`$]/.test(startCommand)) throw new Error("Invalid start command");
+  if (!cmd || /[;&|`$%!^"'<>()\n\r]/.test(startCommand)) throw new Error("Invalid start command");
   const args = parts.slice(1);
   const p = startManaged(id, cmd, args, {
     cwd, logFile, onExit,

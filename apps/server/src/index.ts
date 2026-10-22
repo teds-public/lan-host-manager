@@ -76,12 +76,12 @@ const serveDirSchema = z.string().max(200).refine(
 );
 
 const startCommandSchema = z.string().max(500).refine(
-  (s) => s.trim().length > 0 && !/[;&|`$<>()\n\r]/.test(s),
+  (s) => s.trim().length > 0 && !/[;&|`$<>()\n\r%!^"']/.test(s),
   { message: "startCommand must be a plain command without shell operators" },
 );
 
 const installCommandSchema = z.string().max(500).refine(
-  (s) => /^(npm|pnpm|yarn)\b/.test(s.trim()) && !/[;&|`$<>()\n\r]/.test(s),
+  (s) => /^(npm|pnpm|yarn)\b/.test(s.trim()) && !/[;&|`$<>()\n\r%!^"']/.test(s),
   { message: "installCommand must be an npm/pnpm/yarn invocation without shell operators" },
 );
 
@@ -300,7 +300,7 @@ app.post("/api/projects/:id/install", async (req: FastifyRequest<{ Params: { id:
   }
   const manager = p.installCommand?.trim().split(/\s+/)[0] ?? "npm";
   const args = p.installCommand ? p.installCommand.trim().split(/\s+/).slice(1) : ["install", "--no-audit", "--no-fund"];
-  if (args.some((a) => /[;&|`$<>()\n\r]/.test(a))) {
+  if (args.some((a) => /[;&|`$<>()\n\r%!^"']/.test(a))) {
     reply.code(400);
     return { error: "bad-request", message: "Install arguments contain shell operators. Refusing to run." };
   }

@@ -27,10 +27,12 @@ export function startManaged(
   opts: { cwd: string; env?: Record<string, string>; logFile: string; onExit?: (code: number | null) => void },
 ): ManagedProcess {
   stopManaged(id);
+  // Windows: npm/pnpm/yarn/node are .cmd shims, resolvable only via the shell.
+  // Callers must reject shell metacharacters before reaching here.
   const child = spawn(command, args, {
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env },
-    shell: false,
+    shell: process.platform === "win32",
     windowsHide: true,
   });
   const entry: Entry = { child, logFile: opts.logFile, exitCode: null, onExit: opts.onExit };

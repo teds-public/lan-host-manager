@@ -1,58 +1,34 @@
 import Fastify, { type FastifyRequest } from "fastify";
-import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import * as dbSchema from "@lan/database";
-import { createSession, destroySession, getSession, hashPassword, verifyPassword } from "./auth.js";
 import { getLanIPv4 } from "./lan.js";
 import { initStore, listProjects, getProject, now } from "./store.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
-import { extractRar, validateArchiveName } from "@lan/archive";
+import { extractArchive, validateArchiveName } from "@lan/archive";
 import { detectProject } from "@lan/detector";
 import { findFreePort, isPortFree } from "@lan/ports";
 import { serveStatic, startNode, stopHosting, isHosting, nodeExitCode } from "@lan/hosting";
 import { logFileFor, readTail, startManaged, writeLog } from "@lan/process-manager";
-import { activateDirectory, createBackup, listBackupRows, pruneBackups, restoreBackup } from "./backups.js";
 import { envSchema } from "@lan/config";
 
 const env = envSchema.parse(process.env);
 const store = initStore();
 
-for (const d of [store.projectsDir, store.stagingDir, store.backupsDir, store.logsDir, store.archivesDir]) {
+for (const d of [store.projectsDir, store.stagingDir, store.logsDir, store.archivesDir]) {
   fs.mkdirSync(d, { recursive: true });
 }
 
 const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 * 1024 });
-await app.register(cookie);
 await app.register(multipart, { limits: { fileSize: 1024 * 1024 * 1024 } });
-
-type SessionUser = { username: string } | null;
-declare module "fastify" {
-  interface FastifyRequest { user: SessionUser; }
-}
-
-app.addHook("preHandler", async (req, reply) => {
-  const publicPaths = ["/api/auth/login", "/api/auth/setup-needed", "/api/auth/setup", "/api/health"];
-  if (req.url.startsWith("/api/") && !publicPaths.some((p) => req.url.startsWith(p))) {
-    const token = req.cookies.session;
-    req.user = getSession(token);
-    if (!req.user) { reply.code(401).send({ error: "unauthorized", message: "Login required" }); return; }
-  }
-});
 
 const pendingImports = new Map<string, {
   id: string; archivePath: string; archiveName: string; archiveSize: number;
-  outDir: string; rootDir: string; entries: number;
-  detection: ReturnType<typeof detectProject>;
-}>();
-
-const pendingUpdates = new Map<string, {
-  id: string; projectId: string; archivePath: string; archiveName: string; archiveSize: number;
   outDir: string; rootDir: string; entries: number;
   detection: ReturnType<typeof detectProject>;
 }>();
@@ -88,43 +64,6 @@ async function verifyRunning(id: string, pid: number | null): Promise<boolean> {
 }
 
 app.get("/api/health", async () => ({ ok: true }));
-
-app.get("/api/auth/setup-needed", async () => {
-  const users = store.db.select().from(dbSchema.users).all();
-  return { setupNeeded: users.length === 0 };
-});
-
-app.post("/api/auth/setup", async (req, reply) => {
-  const body = z.object({ username: z.string().min(1), password: z.string().min(8) }).parse(req.body);
-  const existing = store.db.select().from(dbSchema.users).all();
-  if (existing.length > 0) { reply.code(400); return { error: "bad-request", message: "Already set up" }; }
-  const id = randomUUID();
-  store.db.insert(dbSchema.users).values({
-    id, username: body.username, passwordHash: await hashPassword(body.password), createdAt: now(),
-  }).run();
-  const token = createSession(body.username);
-  reply.setCookie("session", token, { path: "/", httpOnly: true, sameSite: "lax" });
-  return { ok: true };
-});
-
-app.post("/api/auth/login", async (req, reply) => {
-  const body = z.object({ username: z.string(), password: z.string() }).parse(req.body);
-  const rows = store.db.select().from(dbSchema.users).where(eq(dbSchema.users.username, body.username)).all();
-  const user = rows[0];
-  if (!user || !(await verifyPassword(body.password, user.passwordHash))) {
-    reply.code(401);
-    return { error: "unauthorized", message: "Invalid credentials" };
-  }
-  const token = createSession(user.username);
-  reply.setCookie("session", token, { path: "/", httpOnly: true, sameSite: "lax" });
-  return { ok: true };
-});
-
-app.post("/api/auth/logout", async (req, reply) => {
-  if (req.cookies.session) destroySession(req.cookies.session);
-  reply.clearCookie("session", { path: "/" });
-  return { ok: true };
-});
 
 const serveDirSchema = z.string().max(200).refine(
   (s) => {
@@ -221,7 +160,7 @@ app.post("/api/imports/upload", async (req, reply) => {
     return { error: "bad-request", message: (e as Error).message };
   }
   const size = fs.statSync(archivePath).size;
-  const result = await extractRar(archivePath, staging, limits.rarBinary, {
+  const result = await extractArchive(archivePath, staging, limits.rarBinary, {
     maxEntries: limits.maxEntries, maxDecompressedMb: limits.maxDecompressedMb, timeoutSec: limits.extractTimeoutSec,
   });
   const detection = detectProject(result.rootDir);
@@ -288,10 +227,7 @@ function rateLimit(key: string, max: number, windowMs: number): boolean {
 }
 
 app.addHook("preHandler", async (req, reply) => {
-  const ip = req.ip;
-  const authPath = req.url.startsWith("/api/auth/");
-  const limit = authPath ? 20 : 300;
-  if (req.url.startsWith("/api/") && !rateLimit(`${ip}:${authPath ? "auth" : "api"}`, limit, 60_000)) {
+  if (req.url.startsWith("/api/") && !rateLimit(req.ip, 300, 60_000)) {
     reply.code(429).send({ error: "rate-limited", message: "Too many requests. Slow down and retry." });
     return;
   }
@@ -425,7 +361,7 @@ app.patch("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string
   return { ok: true };
 });
 
-app.post("/api/projects/:id/updates/upload", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+app.post("/api/projects/:id/replace", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
   const p = await getProject(store, req.params.id);
   if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
   const limits = getLimits();
@@ -433,8 +369,7 @@ app.post("/api/projects/:id/updates/upload", async (req: FastifyRequest<{ Params
   if (!file) { reply.code(400); return { error: "bad-request", message: "No file uploaded" }; }
   try { validateArchiveName(file.filename); }
   catch (e) { reply.code(400); return { error: "bad-request", message: (e as Error).message }; }
-  const updateId = randomUUID();
-  const staging = path.join(store.stagingDir, updateId);
+  const staging = path.join(store.stagingDir, `replace-${p.id}-${Date.now()}`);
   fs.mkdirSync(staging, { recursive: true });
   const archivePath = path.join(staging, path.basename(file.filename));
   try {
@@ -444,10 +379,9 @@ app.post("/api/projects/:id/updates/upload", async (req: FastifyRequest<{ Params
     reply.code(400);
     return { error: "bad-request", message: (e as Error).message };
   }
-  const size = fs.statSync(archivePath).size;
   let result;
   try {
-    result = await extractRar(archivePath, staging, limits.rarBinary, {
+    result = await extractArchive(archivePath, staging, limits.rarBinary, {
       maxEntries: limits.maxEntries, maxDecompressedMb: limits.maxDecompressedMb, timeoutSec: limits.extractTimeoutSec,
     });
   } catch (e) {
@@ -456,102 +390,48 @@ app.post("/api/projects/:id/updates/upload", async (req: FastifyRequest<{ Params
     return { error: "bad-request", message: (e as Error).message };
   }
   const detection = detectProject(result.rootDir);
-  pendingUpdates.set(updateId, {
-    id: updateId, projectId: p.id, archivePath, archiveName: file.filename, archiveSize: size,
-    outDir: result.outDir, rootDir: result.rootDir, entries: result.entries, detection,
-  });
-  return { updateId, entries: result.entries, detection };
-});
-
-app.post("/api/updates/:id/confirm", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
-  const pending = pendingUpdates.get(req.params.id);
-  if (!pending) { reply.code(404); return { error: "not-found", message: "Update not found or expired" }; }
-  const p = await getProject(store, pending.projectId);
-  if (!p) { pendingUpdates.delete(req.params.id); reply.code(404); return { error: "not-found", message: "Project not found" }; }
-  const body = z.object({
-    serveDir: serveDirSchema.optional(),
-    spaFallback: z.boolean().default(!!p.spaFallback),
-    startCommand: startCommandSchema.nullable().optional(),
-  }).parse(req.body);
-  if (pending.detection.type === "unknown") {
+  if (detection.type === "unknown") {
+    fs.rmSync(staging, { recursive: true, force: true });
     reply.code(400);
-    return { error: "bad-request", message: "Unsupported project type in update archive." };
+    return { error: "bad-request", message: "Unsupported project type in archive." };
   }
-
+  const managedRoot = path.resolve(store.projectsDir);
+  const dest = path.resolve(path.join(store.projectsDir, p.id));
+  if (dest !== managedRoot && !dest.startsWith(`${managedRoot}${path.sep}`)) {
+    fs.rmSync(staging, { recursive: true, force: true });
+    reply.code(400);
+    return { error: "bad-request", message: "Invalid project path." };
+  }
+  const wasRunning = isHosting(p.id, p.pid);
   stopHosting(p.id);
-  const backup = createBackup(store, p.id, p.version, p.path);
-  const backupId = backup.id;
-  const backupDir = backup.path;
-
-  const newVersion = p.version + 1;
   try {
-    activateDirectory(store, p.id, pending.rootDir);
-    fs.rmSync(path.dirname(pending.outDir), { recursive: true, force: true });
-    pendingUpdates.delete(req.params.id);
+    fs.rmSync(dest, { recursive: true, force: true });
+    fs.mkdirSync(dest, { recursive: true });
+    fs.cpSync(result.outDir === result.rootDir ? result.outDir : result.rootDir, dest, { recursive: true });
+    fs.rmSync(staging, { recursive: true, force: true });
+    const newVersion = p.version + 1;
     store.db.update(dbSchema.projects).set({
-      type: pending.detection.type,
-      serveDir: body.serveDir ?? pending.detection.serveDirCandidates[0] ?? p.serveDir,
-      spaFallback: body.spaFallback ? 1 : 0,
-      startCommand: body.startCommand !== undefined ? body.startCommand : p.startCommand,
-      scripts: pending.detection.scripts ? JSON.stringify(pending.detection.scripts) : p.scripts,
+      type: detection.type,
+      serveDir: detection.serveDirCandidates[0] ?? p.serveDir,
+      startCommand: p.startCommand,
+      scripts: detection.scripts ? JSON.stringify(detection.scripts) : p.scripts,
       version: newVersion,
-      archiveName: pending.archiveName, archiveSize: pending.archiveSize,
+      archiveName: file.filename, archiveSize: fs.statSync(archivePath).size,
       pid: null, lastExitCode: null, status: "stopped", updatedAt: now(),
     }).where(eq(dbSchema.projects.id, p.id)).run();
-
-    const updated = (await getProject(store, p.id))!;
-    if (!(await isPortFree(updated.port))) throw new Error(`Port ${updated.port} is occupied. Restore the backup or free the port.`);
-    const pid = await startProjectRecord(updated);
-    const healthy = await verifyRunning(updated.id, pid);
-    if (!healthy) throw new Error("New version failed to start. Restoring previous version.");
-    store.db.update(dbSchema.projects).set({ status: "running", pid, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
-    appendSysLog(p.id, `updated to v${newVersion} (backup ${backupId})`);
-    return { ok: true, version: newVersion, backupId };
+    appendSysLog(p.id, `files replaced with ${file.filename} (v${newVersion})`);
+    if (wasRunning) {
+      const updated = (await getProject(store, p.id))!;
+      if (await isPortFree(updated.port)) {
+        const pid = await startProjectRecord(updated);
+        store.db.update(dbSchema.projects).set({ status: "running", pid, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
+      }
+    }
+    return { ok: true, version: newVersion };
   } catch (e) {
-    try {
-      stopHosting(p.id);
-      activateDirectory(store, p.id, backupDir);
-      const restored = (await getProject(store, p.id))!;
-      const pid = await isPortFree(restored.port) ? await startProjectRecord(restored) : null;
-      store.db.update(dbSchema.projects).set({
-        status: pid !== null || restored.type === "static" ? "running" : "crashed",
-        pid, updatedAt: now(),
-      }).where(eq(dbSchema.projects.id, p.id)).run();
-      appendSysLog(p.id, `update failed, restored v${p.version}: ${(e as Error).message}`);
-    } catch { /* backup dir retained for manual recovery */ }
     reply.code(500);
-    return { error: "update-failed", message: (e as Error).message, restored: true, backupId };
+    return { error: "replace-failed", message: (e as Error).message };
   }
-});
-
-app.get("/api/projects/:id/backups", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
-  const p = await getProject(store, req.params.id);
-  if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
-  return listBackupRows(store, p.id);
-});
-
-app.post("/api/projects/:id/backups", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
-  const p = await getProject(store, req.params.id);
-  if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
-  const backup = createBackup(store, p.id, p.version, p.path);
-  return { backupId: backup.id, version: p.version };
-});
-
-app.post("/api/projects/:id/rollback/:backupId", async (
-  req: FastifyRequest<{ Params: { id: string; backupId: string } }>, reply,
-) => {
-  const p = await getProject(store, req.params.id);
-  if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
-  stopHosting(p.id);
-  let version: number;
-  try {
-    version = restoreBackup(store, p.id, req.params.backupId).version;
-  } catch {
-    reply.code(404);
-    return { error: "not-found", message: "Backup not found" };
-  }
-  appendSysLog(p.id, `rolled back to backup ${req.params.backupId} (v${version})`);
-  return { ok: true, version };
 });
 
 app.delete("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
@@ -559,7 +439,6 @@ app.delete("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: strin
   if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
   const body = z.object({
     removeFiles: z.boolean().default(false),
-    deleteBackups: z.boolean().default(false),
   }).parse(req.body ?? {});
   stopHosting(p.id);
   const managedRoot = path.resolve(store.projectsDir);
@@ -570,11 +449,6 @@ app.delete("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: strin
       return { error: "bad-request", message: "Refusing to delete outside managed directory" };
     }
     fs.rmSync(projectPath, { recursive: true, force: true });
-  }
-  if (body.deleteBackups) {
-    const rows = store.db.select().from(dbSchema.backups).where(eq(dbSchema.backups.projectId, p.id)).all();
-    for (const b of rows) fs.rmSync(b.path, { recursive: true, force: true });
-    store.db.delete(dbSchema.backups).where(eq(dbSchema.backups.projectId, p.id)).run();
   }
   store.db.delete(dbSchema.projects).where(eq(dbSchema.projects.id, p.id)).run();
   return { ok: true };
@@ -619,22 +493,6 @@ app.put("/api/settings", async (req, reply) => {
     store.db.insert(dbSchema.settings).values({ key: k, value: str, updatedAt: now() })
       .onConflictDoUpdate({ target: dbSchema.settings.key, set: { value: str, updatedAt: now() } }).run();
   }
-  return { ok: true };
-});
-
-app.post("/api/auth/change-password", async (req, reply) => {
-  const body = z.object({ current: z.string().min(1), next: z.string().min(12).max(200) }).parse(req.body);
-  const rows = store.db.select().from(dbSchema.users).all();
-  const user = rows[0];
-  if (!user || !req.user || user.username !== req.user.username) {
-    reply.code(401);
-    return { error: "unauthorized", message: "Login required" };
-  }
-  if (!(await verifyPassword(body.current, user.passwordHash))) {
-    reply.code(401);
-    return { error: "unauthorized", message: "Current password is wrong." };
-  }
-  store.db.update(dbSchema.users).set({ passwordHash: await hashPassword(body.next) }).where(eq(dbSchema.users.id, user.id)).run();
   return { ok: true };
 });
 

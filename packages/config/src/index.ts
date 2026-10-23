@@ -8,7 +8,6 @@ export const envSchema = z.object({
   BIND_HOST: z.string().default("0.0.0.0"),
   PORT_RANGE_START: z.coerce.number().int().default(4100),
   PORT_RANGE_END: z.coerce.number().int().default(4999),
-  SESSION_SECRET: z.string().min(16).default("dev-only-change-me-00000000000000"),
 });
 
 export function defaultDataDir(): string {
@@ -20,8 +19,4 @@ export function defaultDataDir(): string {
 
 export function resolveDataDir(): string {
   return process.env.DATA_DIR?.trim() || defaultDataDir();
-}
-
-export function dataSubdir(base: string, ...parts: string[]): string {
-  return path.join(base, ...parts);
 }

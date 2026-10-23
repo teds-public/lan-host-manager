@@ -9,9 +9,7 @@ export interface Store {
   dataDir: string;
   projectsDir: string;
   stagingDir: string;
-  backupsDir: string;
   logsDir: string;
-  archivesDir: string;
 }
 
 export function initStore(): Store {
@@ -23,9 +21,7 @@ export function initStore(): Store {
     dataDir,
     projectsDir: path.join(dataDir, "projects"),
     stagingDir: path.join(dataDir, "staging"),
-    backupsDir: path.join(dataDir, "backups"),
     logsDir: path.join(dataDir, "logs"),
-    archivesDir: path.join(dataDir, "archives"),
   };
 }
 

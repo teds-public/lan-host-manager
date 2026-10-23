@@ -87,7 +87,3 @@ export function isRunning(id: string, pid: number | null): boolean {
 export function getExitCode(id: string): number | null {
   return procs.get(id)?.exitCode ?? null;
 }
-
-export function stopAll(): void {
-  for (const id of [...procs.keys()]) stopManaged(id);
-}

@@ -4,8 +4,9 @@ import "./index.css";
 
 interface Project {
   id: string; name: string; type: string; status: string; port: number; version: number;
+  path: string;
   serveDir: string | null; spaFallback: boolean; startCommand: string | null;
-  installCommand: string | null; lanUrl: string;
+  installCommand: string | null; lanUrls: string[];
   scripts?: Record<string, string>;
 }
 
@@ -324,14 +325,6 @@ function ProjectCard({ p, refresh }: { p: Project; refresh: () => void }) {
     finally { setLogsBusy(false); }
   }
 
-  async function openFolder() {
-    setMsg(null);
-    try {
-      const d = await api<{ ok: boolean; path: string }>(`/api/projects/${p.id}/open-folder`, { method: "POST" });
-      say(true, `Opened ${d.path} in file manager.`);
-    } catch (e) { say(false, (e as Error).message); }
-  }
-
   const isRunning = p.status === "running";
 
   return (
@@ -344,19 +337,26 @@ function ProjectCard({ p, refresh }: { p: Project; refresh: () => void }) {
       </div>
 
       {isRunning && (
-        <div className="mt-2 flex items-center gap-1.5 rounded-lg bg-slate-50 px-2.5 py-1.5 ring-1 ring-slate-200">
-          <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
-          <a href={p.lanUrl} target="_blank" rel="noreferrer" title={p.lanUrl} className="min-w-0 flex-1 truncate font-mono text-xs text-blue-700 underline-offset-2 hover:underline">{p.lanUrl}</a>
-          <CopyButton text={p.lanUrl} label={`Copy URL for ${p.name}`} />
+        <div className="mt-2 space-y-1 rounded-lg bg-slate-50 px-2.5 py-1.5 ring-1 ring-slate-200">
+          {p.lanUrls.map((u) => (
+            <div key={u} className="flex items-center gap-1.5">
+              <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+              <a href={u} target="_blank" rel="noreferrer" title={u} className="min-w-0 flex-1 truncate font-mono text-xs text-blue-700 underline-offset-2 hover:underline">{u}</a>
+              <CopyButton text={u} label={`Copy URL ${u} for ${p.name}`} />
+            </div>
+          ))}
         </div>
       )}
+      <div className="mt-2 flex items-center gap-1.5 rounded-lg bg-slate-50 px-2.5 py-1.5 ring-1 ring-slate-200" title={p.path}>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-slate-600">{p.path}</span>
+        <CopyButton text={p.path} label={`Copy folder path for ${p.name}`} />
+      </div>
 
       <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label={`Primary actions for ${p.name}`}>
         <button type="button" onClick={() => action("start")} disabled={busy || isRunning} aria-label={`Start ${p.name}`} className={`${btn} bg-emerald-600 text-white hover:bg-emerald-700`}>Start</button>
         <button type="button" onClick={() => action("stop")} disabled={busy || !isRunning} aria-label={`Stop ${p.name}`} className={`${btn} bg-slate-600 text-white hover:bg-slate-700`}>Stop</button>
         <button type="button" onClick={() => action("restart")} disabled={busy} aria-label={`Restart ${p.name}`} className={`${btn} bg-amber-500 text-white hover:bg-amber-600`}>Restart</button>
-        {isRunning && <a href={p.lanUrl} target="_blank" rel="noreferrer" aria-label={`Open ${p.name} in a new tab`} className={`${btn} bg-blue-600 text-white hover:bg-blue-700`}>Open</a>}
-        <button type="button" onClick={openFolder} aria-label={`Open project folder for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>Folder</button>
+        {isRunning && p.lanUrls[0] && <a href={p.lanUrls[0]} target="_blank" rel="noreferrer" aria-label={`Open ${p.name} in a new tab`} className={`${btn} bg-blue-600 text-white hover:bg-blue-700`}>Open</a>}
         <button type="button" onClick={viewLogs} disabled={logsBusy} aria-expanded={showLogs} aria-label={`${showLogs ? "Hide" : "View"} logs for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>{logsBusy ? "Loading…" : showLogs ? "Hide logs" : "Logs"}</button>
         <button type="button" onClick={loadDetails} disabled={cfgBusy} aria-expanded={showConfig} aria-label={`${showConfig ? "Hide" : "Show"} configuration for ${p.name}`} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>{cfgBusy ? "Loading…" : "Config"}</button>
         {p.type === "node" && <button type="button" onClick={() => setConfirm({ title: `Install dependencies for ${p.name}?`, body: "Runs the package manager inside the project directory. Check the install command in Config first.", label: "Install", run: install })} disabled={busy} className={`${btn} bg-cyan-700 text-white hover:bg-cyan-800`}>Install</button>}
@@ -433,14 +433,14 @@ function Settings({ onBack }: { onBack: () => void }) {
   const [form, setForm] = useState({ rarBinary: "", maxUploadMb: "500", maxEntries: "10000", maxDecompressedMb: "2048", extractTimeoutSec: "120", lanAccess: "true" });
   const [msg, setMsg] = useState<Toast>(null);
   const [saving, setSaving] = useState(false);
-  const [info, setInfo] = useState<{ lanIps: string[]; dashboardPort: number; bindHost: string; portRange: [number, number]; lanAccess: boolean; projectHost: string } | null>(null);
+  const [info, setInfo] = useState<{ lanIps: string[]; dashboardPort: number; bindHost: string; portRange: [number, number]; lanAccess: boolean; projectHost: string; paths: { dataDir: string; projectsDir: string; stagingDir: string; logsDir: string } } | null>(null);
   useEffect(() => {
     api<Record<string, string>>("/api/settings").then((s) => setForm({
       rarBinary: s.rarBinary ?? "", maxUploadMb: s.maxUploadMb ?? "500",
       maxEntries: s.maxEntries ?? "10000", maxDecompressedMb: s.maxDecompressedMb ?? "2048",
       extractTimeoutSec: s.extractTimeoutSec ?? "120", lanAccess: s.lanAccess ?? "true",
     })).catch((e) => setMsg({ ok: false, text: (e as Error).message }));
-    api<{ lanIps: string[]; dashboardPort: number; bindHost: string; portRange: [number, number]; lanAccess: boolean; projectHost: string }>("/api/system/info").then(setInfo).catch(() => undefined);
+    api<{ lanIps: string[]; dashboardPort: number; bindHost: string; portRange: [number, number]; lanAccess: boolean; projectHost: string; paths: { dataDir: string; projectsDir: string; stagingDir: string; logsDir: string } }>("/api/system/info").then(setInfo).catch(() => undefined);
   }, []);
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -509,6 +509,14 @@ function Settings({ onBack }: { onBack: () => void }) {
           <CopyButton text={`New-NetFirewallRule -DisplayName "LAN Host Manager" -Direction Inbound -Action Allow -Protocol TCP -LocalPort ${info?.dashboardPort ?? 3000},${info?.portRange.join("-") ?? "4100-4999"} -Profile Private`} label="Copy firewall command" />
         </div>
         <p className="mt-1.5 text-xs text-slate-500">Never open these ports on public networks. No router port forwarding — LAN only.</p>
+      </section>
+      <section aria-labelledby="staging-heading" className={`${cardCls} p-4 text-sm sm:p-5`}>
+        <h2 id="staging-heading" className="text-base font-semibold text-slate-900">Staging directory</h2>
+        <p className="mt-1 text-slate-600">Uploaded archives wait here until you confirm the import.</p>
+        <div className="mt-2 flex items-start gap-1.5">
+          <pre className="min-w-0 flex-1 select-all overflow-auto rounded-lg bg-slate-950 p-2.5 font-mono text-xs text-emerald-300">{info?.paths.stagingDir ?? "—"}</pre>
+          {info && <CopyButton text={info.paths.stagingDir} label="Copy staging directory path" />}
+        </div>
       </section>
     </div>
   );

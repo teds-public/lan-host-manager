@@ -10,7 +10,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
   },
-  "dependencies": { "@lan/database": "*", "@lan/shared": "*" },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "better-sqlite3": "^12.2.0",

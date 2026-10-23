@@ -28,18 +28,3 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
-
-export const users = sqliteTable("users", {
-  id: text("id").primaryKey(),
-  username: text("username").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),
-  createdAt: text("created_at").notNull(),
-});
-
-export const backups = sqliteTable("backups", {
-  id: text("id").primaryKey(),
-  projectId: text("project_id").notNull(),
-  path: text("path").notNull(),
-  version: integer("version").notNull(),
-  createdAt: text("created_at").notNull(),
-});

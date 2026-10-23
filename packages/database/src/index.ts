@@ -26,14 +26,6 @@ const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
   );`,
-  `CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL, created_at TEXT NOT NULL
-  );`,
-  `CREATE TABLE IF NOT EXISTS backups (
-    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, path TEXT NOT NULL,
-    version INTEGER NOT NULL, created_at TEXT NOT NULL
-  );`,
 ];
 
 export function migrate(raw: Database.Database): void {

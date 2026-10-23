@@ -7,10 +7,9 @@ LAN-only local web hosting platform. Upload `.rar` archives of web projects from
 1. Install Node.js 20+.
 2. Install WinRAR (provides extraction) — or set `RAR_BINARY` to your `unrar.exe` path.
 3. `npm install`
-4. Copy `.env.example` to `.env`, set a strong `SESSION_SECRET`.
+4. Copy `.env.example` to `.env` and adjust.
 5. `npm run build`, then `npm start` (or `npm run dev` per app).
 6. Open `http://<host-lan-ip>:3000` from any LAN device.
-7. Create the admin account on first launch.
 
 ## Firewall (Windows)
 
@@ -26,8 +25,8 @@ Never open these ports on public networks, and never configure router port forwa
 
 - `apps/server` — Fastify API + hosting runtime (serves the built dashboard).
 - `apps/web` — React dashboard (`/api` relative URL).
-- `packages/*` — shared, config, database, archive, detector, ports, process-manager, hosting.
-- App data (DB, projects, logs, backups) lives outside the repo in `%LOCALAPPDATA%\LanHostManager` (Windows) or `~/.local/share/lanhostmanager` (Linux); override with `DATA_DIR`.
+- `packages/*` — config, database, archive, detector, ports, process-manager, hosting.
+- App data (DB, projects, logs) lives outside the repo in `%LOCALAPPDATA%\LanHostManager` (Windows) or `~/.local/share/lanhostmanager` (Linux); override with `DATA_DIR`.
 
 ## Scripts
 

@@ -20,7 +20,7 @@ import { envSchema } from "@lan/config";
 const env = envSchema.parse(process.env);
 const store = initStore();
 
-for (const d of [store.projectsDir, store.stagingDir, store.logsDir, store.archivesDir]) {
+for (const d of [store.projectsDir, store.stagingDir, store.logsDir]) {
   fs.mkdirSync(d, { recursive: true });
 }
 
@@ -50,18 +50,6 @@ function startProjectRecord(p: {
     store.db.update(dbSchema.projects).set({ status: "crashed", lastExitCode: code, pid: null, updatedAt: now() }).where(eq(dbSchema.projects.id, p.id)).run();
     writeLog(logFileFor(store.logsDir, p.id), "sys", `marked crashed (exit ${code})`);
   }));
-}
-
-async function verifyRunning(id: string, pid: number | null): Promise<boolean> {
-  await new Promise((r) => setTimeout(r, 1500));
-  try {
-    const res = await fetch(`http://127.0.0.1:${(await getProject(store, id))?.port ?? 0}/`, { signal: AbortSignal.timeout(3000) });
-    await res.arrayBuffer().catch(() => undefined);
-    return true;
-  } catch {
-    if (pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
-    return true;
-  }
 }
 
 app.get("/api/health", async () => ({ ok: true }));
@@ -94,12 +82,19 @@ function projectHost(): string {
   return env.BIND_HOST;
 }
 
+function projectUrls(port: number): string[] {
+  const host = projectHost();
+  if (host !== "0.0.0.0") return [`http://${host}:${port}`];
+  const ips = getLanIPv4();
+  if (ips.length === 0) return [`http://localhost:${port}`];
+  return ips.map((ip) => `http://${ip}:${port}`);
+}
+
 app.get("/api/projects", async () => {
   const rows = await listProjects(store);
-  const host = projectHost();
   return rows.map((r) => ({
     ...r, spaFallback: !!r.spaFallback, autoStart: !!r.autoStart,
-    lanUrl: `http://${host === "0.0.0.0" ? getLanIPv4()[0] ?? "localhost" : host}:${r.port}`,
+    lanUrls: projectUrls(r.port),
   }));
 });
 
@@ -109,9 +104,7 @@ app.get("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string }
   let scripts: Record<string, string> | undefined;
   try { scripts = p.scripts ? (JSON.parse(p.scripts) as Record<string, string>) : undefined; }
   catch { scripts = undefined; }
-  const host = projectHost();
-  const lanUrl = `http://${host === "0.0.0.0" ? getLanIPv4()[0] ?? "localhost" : host}:${p.port}`;
-  return { ...p, spaFallback: !!p.spaFallback, autoStart: !!p.autoStart, scripts, lanUrl };
+  return { ...p, spaFallback: !!p.spaFallback, autoStart: !!p.autoStart, scripts, lanUrls: projectUrls(p.port) };
 });
 
 function getLimits(): { maxUploadMb: number; maxEntries: number; maxDecompressedMb: number; extractTimeoutSec: number; rarBinary: string } {
@@ -192,7 +185,7 @@ app.post("/api/imports/:id/confirm", async (req: FastifyRequest<{ Params: { id: 
   const dest = path.join(store.projectsDir, id);
   fs.mkdirSync(dest, { recursive: true });
   fs.cpSync(pending.rootDir, dest, { recursive: true });
-  fs.rmSync(path.dirname(pending.outDir) === store.stagingDir ? stagingOf(pending) : pending.outDir, { recursive: true, force: true });
+  fs.rmSync(path.dirname(pending.outDir) === store.stagingDir ? path.dirname(pending.outDir) : pending.outDir, { recursive: true, force: true });
   pendingImports.delete(req.params.id);
   const projectPath = path.join(dest, "");
   store.db.insert(dbSchema.projects).values({
@@ -207,10 +200,6 @@ app.post("/api/imports/:id/confirm", async (req: FastifyRequest<{ Params: { id: 
   }).run();
   return { id, port };
 });
-
-function stagingOf(pending: { outDir: string }): string {
-  return path.dirname(pending.outDir);
-}
 
 function appendSysLog(projectId: string, msg: string): void {
   try {
@@ -321,36 +310,6 @@ app.get("/api/projects/:id/logs", async (req: FastifyRequest<{ Params: { id: str
   const file = p.logFile ?? logFileFor(store.logsDir, p.id);
   const limit = Math.min(Number((req.query as { tail?: string }).tail ?? 200) || 200, 2000) * 1024;
   return { logs: readTail(file, limit) };
-});
-
-app.post("/api/projects/:id/open-folder", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
-  const p = await getProject(store, req.params.id);
-  if (!p) { reply.code(404); return { error: "not-found", message: "Project not found" }; }
-  const managedRoot = path.resolve(store.projectsDir);
-  const projectPath = path.resolve(p.path);
-  if (projectPath !== managedRoot && !projectPath.startsWith(`${managedRoot}${path.sep}`)) {
-    reply.code(400);
-    return { error: "bad-request", message: "Invalid project path." };
-  }
-  if (!fs.existsSync(projectPath)) {
-    reply.code(404);
-    return { error: "not-found", message: "Project files not found on disk." };
-  }
-  try {
-    const { execFile } = await import("node:child_process");
-    const target = projectPath;
-    if (process.platform === "win32") {
-      execFile("explorer.exe", [target], { windowsHide: true }, () => undefined);
-    } else if (process.platform === "darwin") {
-      execFile("open", [target], () => undefined);
-    } else {
-      execFile("xdg-open", [target], () => undefined);
-    }
-    return { ok: true, path: projectPath };
-  } catch (e) {
-    reply.code(500);
-    return { error: "open-failed", message: (e as Error).message, path: projectPath };
-  }
 });
 
 app.patch("/api/projects/:id", async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
@@ -486,6 +445,12 @@ app.get("/api/system/info", async () => {
     portRange: [env.PORT_RANGE_START, env.PORT_RANGE_END],
     lanAccess,
     projectHost: projectHost(),
+    paths: {
+      dataDir: store.dataDir,
+      projectsDir: store.projectsDir,
+      stagingDir: store.stagingDir,
+      logsDir: store.logsDir,
+    },
   };
 });
 

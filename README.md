@@ -8,15 +8,15 @@ LAN-only local web hosting platform. Upload `.rar` archives of web projects from
 2. Install WinRAR (provides extraction) — or set `RAR_BINARY` to your `unrar.exe` path.
 3. `npm install`
 4. Copy `.env.example` to `.env` and adjust.
-5. `npm run build`, then `npm start` (or `npm run dev` per app).
-6. Open `http://<host-lan-ip>:3000` from any LAN device.
+5. `npm run build`, then `npm start` (or double-click `start.bat`, or `npm run dev` per app).
+6. Open `http://<host-lan-ip>:5000` from any LAN device.
 
 ## Firewall (Windows)
 
-Allow inbound TCP on the dashboard port (default 3000) and the project range (4100–4999) for **private** networks only:
+Allow inbound TCP on the dashboard port (default 5000) and the project range (4100–4999) for **private** networks only:
 
 ```powershell
-New-NetFirewallRule -DisplayName "LAN Host Manager" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3000,4100-4999 -Profile Private
+New-NetFirewallRule -DisplayName "LAN Host Manager" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5000,4100-4999 -Profile Private
 ```
 
 Never open these ports on public networks, and never configure router port forwarding — this app is LAN-only by design.

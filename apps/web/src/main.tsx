@@ -505,8 +505,8 @@ function Settings({ onBack }: { onBack: () => void }) {
         <h2 id="fw-heading" className="text-base font-semibold text-slate-900">Windows Firewall</h2>
         <p className="mt-1 text-slate-600">Allow inbound TCP on the dashboard port and project range for <strong>private</strong> networks only:</p>
         <div className="mt-2 flex items-start gap-1.5">
-          <pre className="min-w-0 flex-1 select-all overflow-auto rounded-lg bg-slate-950 p-2.5 font-mono text-xs text-emerald-300">New-NetFirewallRule -DisplayName "LAN Host Manager" -Direction Inbound -Action Allow -Protocol TCP -LocalPort {info?.dashboardPort ?? 3000},{info?.portRange.join("-") ?? "4100-4999"} -Profile Private</pre>
-          <CopyButton text={`New-NetFirewallRule -DisplayName "LAN Host Manager" -Direction Inbound -Action Allow -Protocol TCP -LocalPort ${info?.dashboardPort ?? 3000},${info?.portRange.join("-") ?? "4100-4999"} -Profile Private`} label="Copy firewall command" />
+          <pre className="min-w-0 flex-1 select-all overflow-auto rounded-lg bg-slate-950 p-2.5 font-mono text-xs text-emerald-300">New-NetFirewallRule -DisplayName "LAN Host Manager" -Direction Inbound -Action Allow -Protocol TCP -LocalPort {info?.dashboardPort ?? 5000},{info?.portRange.join("-") ?? "4100-4999"} -Profile Private</pre>
+          <CopyButton text={`New-NetFirewallRule -DisplayName "LAN Host Manager" -Direction Inbound -Action Allow -Protocol TCP -LocalPort ${info?.dashboardPort ?? 5000},${info?.portRange.join("-") ?? "4100-4999"} -Profile Private`} label="Copy firewall command" />
         </div>
         <p className="mt-1.5 text-xs text-slate-500">Never open these ports on public networks. No router port forwarding — LAN only.</p>
       </section>
@@ -538,7 +538,7 @@ function SkeletonCard() {
 
 function Dashboard() {
   const { projects, loading, error, refresh } = useProjects();
-  const [info, setInfo] = useState<{ lanIps: string[]; dashboardPort: number }>({ lanIps: [], dashboardPort: 3000 });
+  const [info, setInfo] = useState<{ lanIps: string[]; dashboardPort: number }>({ lanIps: [], dashboardPort: 5000 });
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
   const [page, setPage] = useState("projects");

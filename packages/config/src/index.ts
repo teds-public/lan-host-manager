@@ -4,7 +4,7 @@ import path from "node:path";
 
 export const envSchema = z.object({
   DATA_DIR: z.string().optional(),
-  DASHBOARD_PORT: z.coerce.number().int().default(3000),
+  DASHBOARD_PORT: z.coerce.number().int().default(5000),
   BIND_HOST: z.string().default("0.0.0.0"),
   PORT_RANGE_START: z.coerce.number().int().default(4100),
   PORT_RANGE_END: z.coerce.number().int().default(4999),

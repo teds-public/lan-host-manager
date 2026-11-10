@@ -1,0 +1,10 @@
+[package]
+name = "lan-hosting"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+lazy_static = "1.4"
+lan-process-manager = { path = "../process-manager" }

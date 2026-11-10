@@ -1,0 +1,10 @@
+[package]
+name = "lan-database"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sqlx = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+chrono = "0.4"

@@ -1,0 +1,12 @@
+[package]
+name = "lan-process-manager"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = "0.4"
+lazy_static = "1.4"

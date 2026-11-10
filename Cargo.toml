@@ -1,0 +1,45 @@
+[workspace]
+members = [".", "crates/*", "frontend"]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-native-tls", "migrate"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+anyhow = "1"
+thiserror = "1"
+
+[package]
+name = "lan-host-manager"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+get_if_addrs = "0.5"
+
+# Local crates
+lan-config = { path = "crates/config" }
+lan-database = { path = "crates/database" }
+lan-archive = { path = "crates/archive" }
+lan-detector = { path = "crates/detector" }
+lan-hosting = { path = "crates/hosting" }
+lan-ports = { path = "crates/ports" }
+lan-process-manager = { path = "crates/process-manager" }

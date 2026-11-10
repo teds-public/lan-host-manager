@@ -1,42 +1,25 @@
 @echo off
-:: Start LAN Host Manager dashboard (port 5000)
-setlocal
-cd /d "%~dp0"
-set "code=0"
+echo Building LAN Host Manager (Rust)...
+echo.
 
-where node >nul 2>nul
-if errorlevel 1 (
-  echo Node.js 20+ is required. Install it from https://nodejs.org/ and run this again.
-  set "code=1"
-  goto :pause
+echo [1/3] Building backend...
+cargo build --release
+if %errorlevel% neq 0 (
+    echo Backend build failed!
+    exit /b 1
 )
 
-if not exist "node_modules" (
-  echo Installing dependencies...
-  call npm install
-  if errorlevel 1 (
-    echo npm install failed.
-    set "code=1"
-    goto :pause
-  )
+echo.
+echo [2/3] Building frontend (WASM)...
+cd frontend
+call trunk build --release
+if %errorlevel% neq 0 (
+    echo Frontend build failed!
+    cd ..
+    exit /b 1
 )
+cd ..
 
-echo Building...
-call npm run build
-if errorlevel 1 (
-  echo Build failed.
-  set "code=1"
-  goto :pause
-)
-
-echo Starting dashboard on port 5000...
-call npm start
-set "code=%errorlevel%"
-if not "%code%"=="0" echo Server stopped with exit code %code%.
-
-:pause
-echo "%cmdcmdline%" | findstr /i /c:"/c" >nul
-if errorlevel 1 exit /b %code%
-if defined MSYSTEM exit /b %code%
-pause
-exit /b %code%
+echo.
+echo [3/3] Starting server...
+target\release\lan-host-manager.exe

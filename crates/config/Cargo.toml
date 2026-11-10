@@ -1,0 +1,9 @@
+[package]
+name = "lan-config"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+anyhow = { workspace = true }
+dirs = "5"

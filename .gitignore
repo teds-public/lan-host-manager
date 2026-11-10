@@ -1,7 +1,26 @@
-node_modules/
-dist/
-.env
-*.db*
-staging/
-.turbo/
-**/.turbo/
+# Rust
+/target
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# WASM / Trunk
+/frontend/dist
+.trunk
+
+# Data
+*.db
+*.db-shm
+*.db-wal
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,6 +1,5 @@
 use anyhow::{bail, Result};
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};

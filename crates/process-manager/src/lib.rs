@@ -69,7 +69,6 @@ pub async fn start_managed(
 
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
@@ -116,30 +115,30 @@ pub async fn start_managed(
 }
 
 pub async fn stop_managed(id: &str) -> bool {
-    let mut procs = PROCESSES.lock().unwrap();
+    let proc = PROCESSES.lock().unwrap().remove(id);
+    let Some(proc) = proc else {
+        return false;
+    };
 
-    if let Some(mut proc) = procs.remove(id) {
-        info!("Stopping process {}", id);
+    info!("Stopping process {}", id);
 
-        #[cfg(target_os = "windows")]
-        {
-            if let Some(pid) = proc.pid {
-                let _ = Command::new("taskkill")
-                    .args(["/pid", &pid.to_string(), "/T", "/F"])
-                    .output()
-                    .await;
-            }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(pid) = proc.pid {
+            let _ = Command::new("taskkill")
+                .args(["/pid", &pid.to_string(), "/T", "/F"])
+                .output()
+                .await;
         }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = proc.child.kill().await;
-        }
-
-        true
-    } else {
-        false
     }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut proc = proc;
+        let _ = proc.child.kill().await;
+    }
+
+    true
 }
 
 pub fn is_running(id: &str, _pid: Option<i64>) -> bool {

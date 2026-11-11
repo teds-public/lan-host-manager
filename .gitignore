@@ -1,17 +1,25 @@
-# Rust
+# Rust build output
 /target
-Cargo.lock
 **/*.rs.bk
 *.pdb
+
+# Release package
+/dist
 
 # WASM / Trunk
 /frontend/dist
 .trunk
 
-# Data
+# Environment
+.env
+.env.*
+!.env.example
+
+# Data and logs
 *.db
 *.db-shm
 *.db-wal
+*.log
 
 # IDE
 .vscode/

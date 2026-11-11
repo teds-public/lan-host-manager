@@ -37,28 +37,3 @@ pub struct Project {
     #[serde(rename = "lanUrls")]
     pub lan_urls: Vec<String>,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SystemInfo {
-    #[serde(rename = "lanIps")]
-    pub lan_ips: Vec<String>,
-    #[serde(rename = "dashboardPort")]
-    pub dashboard_port: u16,
-    #[serde(rename = "bindHost")]
-    pub bind_host: String,
-    #[serde(rename = "portRange")]
-    pub port_range: (u16, u16),
-    pub paths: Paths,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Paths {
-    #[serde(rename = "dataDir")]
-    pub data_dir: String,
-    #[serde(rename = "projectsDir")]
-    pub projects_dir: String,
-    #[serde(rename = "stagingDir")]
-    pub staging_dir: String,
-    #[serde(rename = "logsDir")]
-    pub logs_dir: String,
-}

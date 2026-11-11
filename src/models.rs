@@ -39,12 +39,6 @@ pub struct ProjectResponse {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
-    pub message: String,
-}
-
-#[derive(Debug, Serialize)]
 pub struct SuccessResponse {
     pub ok: bool,
 }

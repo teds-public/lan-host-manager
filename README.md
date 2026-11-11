@@ -2,7 +2,9 @@
 
 LAN-only local web hosting platform. Upload `.rar` archives of web projects from any device on your Wi-Fi, extract, assign ports, host, and manage them.
 
-**Now written in Rust** with Yew for the frontend.
+Built with Rust (Axum) and Yew (WASM).
+
+Full setup instructions: [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Requirements
 
@@ -22,6 +24,10 @@ LAN-only local web hosting platform. Upload `.rar` archives of web projects from
    rustup target add wasm32-unknown-unknown
    cargo install trunk
    ```
+
+On Windows, `install.bat` does all of this for you: it checks Rust and the MSVC
+build tools, adds the WASM target, installs Trunk, fetches crates, and creates
+`.env` from `.env.example`.
 
 ## Build & Run
 
@@ -128,16 +134,3 @@ cargo clean
 - Uploaded archives and project code are untrusted. Extraction blocks path traversal, absolute paths, and symlinks, with entry-count, size, and timeout limits.
 - Project commands run only after your explicit approval; dependencies are never installed automatically.
 - Running untrusted code on your host can compromise the machine — host only code you trust.
-
-## Differences from TypeScript Version
-
-- **Performance**: Rust backend is significantly faster
-- **Memory Safety**: No runtime crashes from null/undefined
-- **Frontend**: Yew (Rust WASM) instead of React
-- **Binary**: Single executable, no Node.js runtime needed
-- **API**: Same REST endpoints, backward compatible
-- **Database**: Same SQLite schema, existing data works
-
-## License
-
-See LICENSE file.

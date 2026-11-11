@@ -1,7 +1,7 @@
 #!/bin/bash
 # Quick verification script
 
-echo "🦀 LAN Host Manager - Rust Conversion Verification"
+echo "LAN Host Manager - Verification"
 echo ""
 
 # Check Rust installation
@@ -71,20 +71,11 @@ else
     echo "   ❌ migrations/ directory not found"
 fi
 
-# Check old TypeScript files
-echo ""
-echo "5. Checking for old TypeScript files..."
-if [ -d "apps" ] || [ -d "packages" ] || [ -f "package.json" ]; then
-    echo "   ⚠️  Old TypeScript files still present"
-else
-    echo "   ✅ Old TypeScript files removed"
-fi
-
 # Try to check compilation
 echo ""
-echo "6. Quick compilation check..."
+echo "5. Quick compilation check..."
 if cargo check --quiet 2>&1 | grep -q "error"; then
-    echo "   ⚠️  Compilation has errors (see INSTALL.md for troubleshooting)"
+    echo "   ⚠️  Compilation has errors (see docs/INSTALL.md for troubleshooting)"
 else
     echo "   ✅ Basic compilation check passed"
 fi
@@ -93,7 +84,7 @@ echo ""
 echo "✨ Verification complete!"
 echo ""
 echo "Next steps:"
-echo "  1. Read INSTALL.md for platform-specific setup"
+echo "  1. Read docs/INSTALL.md for platform-specific setup"
 echo "  2. Run 'cargo build' to compile backend"
 echo "  3. Run 'cd frontend && trunk build' to compile frontend"
 echo "  4. Run './start.sh' (Linux/Mac) or 'start.bat' (Windows) to launch"

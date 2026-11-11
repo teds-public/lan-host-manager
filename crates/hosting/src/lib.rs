@@ -1,29 +1,57 @@
 use anyhow::Result;
+use axum::Router;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tokio::sync::oneshot;
+use tower_http::{
+    cors::{Any, CorsLayer},
+    services::{ServeDir, ServeFile},
+};
+
+type Servers = Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>;
 
 lazy_static::lazy_static! {
-    static ref STATIC_SERVERS: Arc<Mutex<HashMap<String, ()>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref STATIC_SERVERS: Servers = Arc::new(Mutex::new(HashMap::new()));
 }
 
 pub async fn serve_static(
     id: String,
     dir: PathBuf,
-    _port: u16,
-    _spa_fallback: bool,
-    _host: String,
+    port: u16,
+    spa_fallback: bool,
+    host: String,
     log_file: PathBuf,
 ) -> Result<()> {
     stop_hosting(&id).await;
 
+    let service = ServeDir::new(&dir);
+    let app = if spa_fallback {
+        Router::new().fallback_service(service.fallback(ServeFile::new(dir.join("index.html"))))
+    } else {
+        Router::new().fallback_service(service)
+    }
+    .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
+
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port)).await?;
+    let (tx, rx) = oneshot::channel::<()>();
+
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = rx.await;
+            })
+            .await;
+    });
+
+    STATIC_SERVERS.lock().unwrap().insert(id, tx);
+
     lan_process_manager::write_log(
         &log_file,
         "sys",
-        &format!("serving static files from {}", dir.display()),
+        &format!("serving {} on {}:{}", dir.display(), host, port),
     );
 
-    STATIC_SERVERS.lock().unwrap().insert(id, ());
     Ok(())
 }
 
@@ -69,7 +97,9 @@ pub async fn start_node(
 }
 
 pub async fn stop_hosting(id: &str) {
-    STATIC_SERVERS.lock().unwrap().remove(id);
+    if let Some(tx) = STATIC_SERVERS.lock().unwrap().remove(id) {
+        let _ = tx.send(());
+    }
     lan_process_manager::stop_managed(id).await;
 }
 
